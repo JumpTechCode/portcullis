@@ -20,6 +20,7 @@ The format follows Michael Nygard's
 - [0009 — Wildcard policy rules pin to the synced tool set](0009-wildcard-policy-rules-pin-to-synced-tool-set.md)
 - [0010 — Async audit pipeline: overflow tiers and durability windows](0010-async-audit-overflow-and-durability.md)
 - [0011 — Buffer-and-scan redaction for V1](0011-buffer-and-scan-redaction.md)
+- [0012 — Connection-level secret injection for V1; defer argument-level](0012-connection-level-secret-injection-for-v1.md)
 
 ## Adding a record
 
