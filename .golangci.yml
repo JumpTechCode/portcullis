@@ -11,6 +11,7 @@ linters:
   enable:
     - bodyclose      # HTTP response bodies must be closed
     - copyloopvar    # loop-variable capture correctness
+    - depguard       # enforce the internal import DAG (design §3)
     - errorlint      # correct error wrapping / comparison
     - gocritic       # opinionated diagnostics
     - gosec          # security-focused static analysis
@@ -21,6 +22,37 @@ linters:
     - unparam        # unused function parameters
     - whitespace     # leading/trailing whitespace
   settings:
+    depguard:
+      # Fast lint-time enforcement of the architecture's allowed import edges.
+      # The precise, per-package DAG is enforced by internal/guard's AST test;
+      # these rules are the stable, low-maintenance subset that catches the most
+      # damaging violations without enumerating every package.
+      rules:
+        # domain and guard are graph leaves: no internal imports at all.
+        # The invariant governs production code; external test packages
+        # legitimately import the package under test, so test files are excluded
+        # (as the AST guard also does). The deny is prefix-based, so it also
+        # forbids a leaf's own subpackages; that is fine only while both leaves
+        # are flat. If either gains a subpackage, add an `allow:` entry for that
+        # leaf's own path (the AST guard already tolerates self-imports).
+        leaf:
+          files:
+            - "**/internal/domain/**"
+            - "**/internal/guard/**"
+            - "!**/*_test.go"
+          deny:
+            - pkg: github.com/JumpTechCode/portcullis/internal
+              desc: domain and guard are leaves of the import graph and must not import other internal packages
+        # Only the composition root (internal/app) and the entrypoint (cmd) may
+        # import internal/app; lower layers must never reach up into the root.
+        composition-root:
+          files:
+            - "!**/internal/app/**"
+            - "!**/cmd/**"
+            - "!**/*_test.go"
+          deny:
+            - pkg: github.com/JumpTechCode/portcullis/internal/app
+              desc: only internal/app (the composition root) and cmd may import internal/app
     gocritic:
       enabled-tags:
         - diagnostic
