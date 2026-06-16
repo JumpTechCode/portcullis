@@ -1,0 +1,41 @@
+listen: "127.0.0.1:8080"
+allowed_origins: ["http://localhost", "vscode-webview://*"]
+
+clients:
+  - id: claude-desktop
+    api_key_env: PORTCULLIS_KEY_CLAUDE
+  - id: ci-bot
+    api_key_env: PORTCULLIS_KEY_CI
+
+downstreams:
+  - name: github
+    transport: stdio
+    command: ["npx", "-y", "@modelcontextprotocol/server-github"]
+    # session_mode omitted on purpose: it must default to per_client.
+    pool: { max: 16, acquire_timeout: 2s, idle_ttl: 90s }
+    secrets: { GITHUB_TOKEN: { env: GH_TOKEN } }
+    health: { interval: 30s }
+  - name: search
+    transport: http
+    url: https://mcp.example.com/mcp
+    secrets: { Authorization: { env: SEARCH_BEARER } }
+
+policy:
+  default: deny
+  rules:
+    - { client: claude-desktop, allow: ["github__create_issue", "github__list_issues", "search__*"] }
+    - { client: ci-bot, allow: ["github__create_issue"] }
+
+redaction:
+  patterns:
+    - { name: aws-key, regex: 'AKIA[0-9A-Z]{16}', anchor: 'AKIA' }
+  max_result_bytes: 1048576
+
+audit:
+  sink: stdout
+  buffer: 10000
+  high_water_mark: 0.85
+  flush: { max_records: 100, max_interval: 50ms }
+  fsync_interval: 1s
+  overflow: shed
+  security_block_timeout: 250ms

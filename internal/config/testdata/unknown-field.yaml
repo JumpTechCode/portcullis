@@ -1,0 +1,26 @@
+listen: "127.0.0.1:8080"
+allowed_origins: ["http://localhost"]
+typo_unknown_field: oops   # not a known field; KnownFields(true) must reject this
+
+clients:
+  - id: claude-desktop
+    api_key_env: PORTCULLIS_KEY_CLAUDE
+
+downstreams:
+  - name: github
+    transport: stdio
+    command: ["npx", "-y", "@modelcontextprotocol/server-github"]
+    pool: { max: 16, acquire_timeout: 2s, idle_ttl: 90s }
+    secrets: { GITHUB_TOKEN: { env: GH_TOKEN } }
+
+policy:
+  default: deny
+  rules:
+    - { client: claude-desktop, allow: ["github__create_issue"] }
+
+redaction:
+  max_result_bytes: 1048576
+
+audit:
+  sink: stdout
+  buffer: 10000

@@ -1,0 +1,29 @@
+# A valid config that omits every defaultable field, to exercise applyDefaults.
+listen: "127.0.0.1:8080"
+allowed_origins: ["http://localhost"]
+
+clients:
+  - id: solo
+    api_key_env: PORTCULLIS_KEY_SOLO
+
+downstreams:
+  - name: github
+    transport: stdio
+    command: ["server-github"]
+    pool: { max: 4 }   # acquire_timeout, idle_ttl omitted -> defaulted
+    secrets: { GITHUB_TOKEN: { env: GH_TOKEN } }
+    # session_mode and health omitted -> defaulted
+
+policy:
+  default: deny
+  rules:
+    - { client: solo, allow: ["github__*"] }
+
+redaction:
+  patterns:
+    - { name: aws-key, regex: 'AKIA[0-9A-Z]{16}', anchor: 'AKIA' }
+  max_result_bytes: 1048576
+
+audit:
+  sink: stdout
+  # everything else omitted -> defaulted
