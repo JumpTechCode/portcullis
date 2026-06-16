@@ -194,6 +194,11 @@ func (p *Pool) Stats() Stats {
 	return Stats{InUse: p.inUse, Idle: len(p.idle), Created: p.created}
 }
 
+// IdleTTL is how long an idle session is kept before being reaped. The Manager
+// reads it to reap held per_client sessions on the same schedule, since those
+// stay in-use from the pool's view and so never face the pool's own reaper.
+func (p *Pool) IdleTTL() time.Duration { return p.cfg.IdleTTL }
+
 // Close stops the reaper and closes all idle sessions. In-use sessions are
 // closed when the caller returns them; the composition root drains in-flight
 // calls before closing the pool.

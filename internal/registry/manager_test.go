@@ -352,7 +352,7 @@ func TestConcurrentErrorDiscardDoesNotCorruptPool(t *testing.T) {
 		}()
 	}
 	arrived.Wait()   // all n calls are inside CallTool on the one cached session
-	close(f.release) // release them to fail together → concurrent discardPerClient
+	close(f.release) // release them to fail together → concurrent finishPerClient discard
 	wg.Wait()
 
 	if got := f.created.Load(); got != 1 {
