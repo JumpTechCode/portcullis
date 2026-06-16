@@ -21,6 +21,7 @@ The format follows Michael Nygard's
 - [0010 — Async audit pipeline: overflow tiers and durability windows](0010-async-audit-overflow-and-durability.md)
 - [0011 — Buffer-and-scan redaction for V1](0011-buffer-and-scan-redaction.md)
 - [0012 — Connection-level secret injection for V1; defer argument-level](0012-connection-level-secret-injection-for-v1.md)
+- [0013 — Per-session dispatch scoping and the downstream session manager](0013-per-session-dispatch-and-downstream-session-manager.md)
 
 ## Adding a record
 
