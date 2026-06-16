@@ -1,3 +1,5 @@
+//go:build unix
+
 package registry_test
 
 import (
@@ -93,6 +95,25 @@ func downstream(t *testing.T, s registry.Session) registry.DownstreamSession {
 		t.Fatalf("factory session %T does not implement DownstreamSession", s)
 	}
 	return ds
+}
+
+func TestStdioSessionCloseIsIdempotent(t *testing.T) {
+	f := helperFactory(t, "unused")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	sess, err := f.New(ctx)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := sess.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	// A second Close must be a safe no-op: it must not re-signal the now-reaped
+	// (possibly recycled) process group, and must not error or panic.
+	if err := sess.Close(); err != nil {
+		t.Errorf("second Close = %v, want nil (idempotent)", err)
+	}
 }
 
 func TestStdioFactoryConnectsAndListsTools(t *testing.T) {

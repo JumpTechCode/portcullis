@@ -1,3 +1,11 @@
+//go:build unix
+
+// This file implements the stdio (subprocess) downstream session and its
+// factory. It is unix-only: orphan-proofing relies on POSIX process groups and
+// signals (ADR-0006). The transport-agnostic DownstreamSession abstraction lives
+// in session.go and is available on all platforms; remote-HTTP downstreams do
+// not need this file.
+
 package registry
 
 import (
@@ -7,42 +15,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/JumpTechCode/portcullis/internal/domain"
 )
-
-// ToolInfo is a downstream's raw, un-namespaced tool as discovered over the
-// wire. The composition root maps these to the gateway's aggregate listing,
-// applying the per-downstream namespace; this package stays transport-level and
-// leaves namespacing and policy filtering to higher layers.
-type ToolInfo struct {
-	// Name is the downstream's own tool name (not yet namespaced).
-	Name string
-	// Description is the human-readable tool description, if any.
-	Description string
-	// InputSchema is the tool's JSON Schema as raw JSON, or nil if the downstream
-	// advertised none. Kept as raw bytes so it round-trips unmodified.
-	InputSchema json.RawMessage
-}
-
-// DownstreamSession is a live session to one downstream MCP server. It extends
-// the pool's Session (which only needs Close) with the operations the dispatcher
-// performs against a downstream: calling tools, discovering them, and pinging
-// for liveness.
-type DownstreamSession interface {
-	Session
-	// CallTool invokes a downstream tool by its un-namespaced name with the given
-	// raw JSON arguments, returning the result for the outbound pipeline.
-	CallTool(ctx context.Context, tool string, args json.RawMessage) (*domain.Result, error)
-	// ListTools returns one page of the downstream's tools plus the next
-	// pagination cursor ("" when the listing is complete).
-	ListTools(ctx context.Context, cursor string) (tools []ToolInfo, next string, err error)
-	// Ping checks that the downstream is responsive.
-	Ping(ctx context.Context) error
-}
 
 // stdioSession is a DownstreamSession backed by a local subprocess speaking MCP
 // over stdin/stdout. It owns both the SDK client session and the underlying
@@ -51,6 +30,9 @@ type DownstreamSession interface {
 type stdioSession struct {
 	cs  *mcp.ClientSession
 	cmd *exec.Cmd
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // Compile-time assertion that stdioSession satisfies DownstreamSession.
@@ -120,21 +102,28 @@ func (s *stdioSession) Pid() int {
 // the server ignored stdin closure, so no descendant is left orphaned. A
 // "no such process" from the group kill is expected when the process already
 // exited and is not reported.
+//
+// Close is idempotent: the teardown runs once. This matters because the group
+// kill targets the negative PID, and a second kill after the process has been
+// reaped could signal an unrelated process group that recycled the PID.
 func (s *stdioSession) Close() error {
-	var firstErr error
-	if s.cs != nil {
-		if err := s.cs.Close(); err != nil {
-			firstErr = fmt.Errorf("close downstream session: %w", err)
-		}
-	}
-	if s.cmd != nil && s.cmd.Process != nil {
-		if err := killProcessGroup(s.cmd.Process.Pid); err != nil && !errors.Is(err, os.ErrProcessDone) && !isNoSuchProcess(err) {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("kill downstream process group: %w", err)
+	s.closeOnce.Do(func() {
+		var firstErr error
+		if s.cs != nil {
+			if err := s.cs.Close(); err != nil {
+				firstErr = fmt.Errorf("close downstream session: %w", err)
 			}
 		}
-	}
-	return firstErr
+		if s.cmd != nil && s.cmd.Process != nil {
+			if err := killProcessGroup(s.cmd.Process.Pid); err != nil && !errors.Is(err, os.ErrProcessDone) && !isNoSuchProcess(err) {
+				if firstErr == nil {
+					firstErr = fmt.Errorf("kill downstream process group: %w", err)
+				}
+			}
+		}
+		s.closeErr = firstErr
+	})
+	return s.closeErr
 }
 
 // marshalSchema renders an SDK tool input schema to raw JSON. From the client
@@ -204,6 +193,13 @@ func (f *StdioFactory) New(ctx context.Context) (Session, error) {
 	client := mcp.NewClient(&mcp.Implementation{Name: "portcullis", Version: "dev"}, nil)
 	cs, err := client.Connect(ctx, transport, nil)
 	if err != nil {
+		// The SDK tears the transport down on most handshake failures, but at
+		// least one branch (an unsupported protocol version) returns without
+		// closing. Best-effort reap the process group so a started child is never
+		// orphaned holding injected credentials.
+		if cmd.Process != nil {
+			_ = killProcessGroup(cmd.Process.Pid)
+		}
 		return nil, fmt.Errorf("connect downstream %q: %w", f.cfg.Command[0], err)
 	}
 	return &stdioSession{cs: cs, cmd: cmd}, nil
