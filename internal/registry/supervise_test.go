@@ -1,4 +1,4 @@
-package registry_test
+package registry
 
 import (
 	"context"
@@ -7,8 +7,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/JumpTechCode/portcullis/internal/registry"
 )
 
 // supSession is a trivial poolable session for supervisor tests.
@@ -29,7 +27,7 @@ type scriptedFactory struct {
 
 var errSpawn = errors.New("spawn failed")
 
-func (f *scriptedFactory) New(_ context.Context) (registry.Session, error) {
+func (f *scriptedFactory) New(_ context.Context) (Session, error) {
 	f.calls.Add(1)
 	if f.failing.Load() {
 		return nil, errSpawn
@@ -37,35 +35,35 @@ func (f *scriptedFactory) New(_ context.Context) (registry.Session, error) {
 	return &supSession{}, nil
 }
 
-// fakeClock is a manually advanced clock for deterministic cooldown timing.
-type fakeClock struct {
+// supClock is a manually advanced clock for deterministic cooldown timing.
+type supClock struct {
 	mu  sync.Mutex
 	now time.Time
 }
 
-func newFakeClock() *fakeClock {
-	return &fakeClock{now: time.Unix(0, 0)}
+func newSupClock() *supClock {
+	return &supClock{now: time.Unix(0, 0)}
 }
 
-func (c *fakeClock) Now() time.Time {
+func (c *supClock) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.now
 }
 
-func (c *fakeClock) Advance(d time.Duration) {
+func (c *supClock) Advance(d time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.now = c.now.Add(d)
 }
 
-func testSupConfig() registry.SupervisorConfig {
-	return registry.SupervisorConfig{MaxConsecutiveFailures: 3, BrokenCooldown: 30 * time.Second}
+func testSupConfig() SupervisorConfig {
+	return SupervisorConfig{MaxConsecutiveFailures: 3, BrokenCooldown: 30 * time.Second}
 }
 
 func TestSupervisedFactorySuccessPassesThroughAndResetsCounter(t *testing.T) {
 	f := &scriptedFactory{}
-	sf := registry.NewSupervisedFactory(f, testSupConfig())
+	sf := NewSupervisedFactory(f, testSupConfig())
 
 	sess, err := sf.New(context.Background())
 	if err != nil {
@@ -102,7 +100,7 @@ func TestSupervisedFactorySuccessPassesThroughAndResetsCounter(t *testing.T) {
 func TestSupervisedFactoryTripsBrokenAfterMaxFailures(t *testing.T) {
 	f := &scriptedFactory{}
 	f.failing.Store(true)
-	sf := registry.NewSupervisedFactory(f, testSupConfig())
+	sf := NewSupervisedFactory(f, testSupConfig())
 
 	// The first MaxConsecutiveFailures calls each reach the delegate and return
 	// its error. The Nth trips the breaker.
@@ -119,7 +117,7 @@ func TestSupervisedFactoryTripsBrokenAfterMaxFailures(t *testing.T) {
 	// Now broken: New must fast-fail with ErrBroken WITHOUT calling the delegate.
 	before := f.calls.Load()
 	_, err := sf.New(context.Background())
-	if !errors.Is(err, registry.ErrBroken) {
+	if !errors.Is(err, ErrBroken) {
 		t.Errorf("got %v, want ErrBroken", err)
 	}
 	if got := f.calls.Load(); got != before {
@@ -130,8 +128,8 @@ func TestSupervisedFactoryTripsBrokenAfterMaxFailures(t *testing.T) {
 func TestSupervisedFactoryProbesAfterCooldown(t *testing.T) {
 	f := &scriptedFactory{}
 	f.failing.Store(true)
-	clk := newFakeClock()
-	sf := registry.NewSupervisedFactoryForTest(f, testSupConfig(), clk.Now)
+	clk := newSupClock()
+	sf := newSupervisedFactory(f, testSupConfig(), clk.Now)
 
 	for i := range 3 {
 		if _, err := sf.New(context.Background()); !errors.Is(err, errSpawn) {
@@ -140,7 +138,7 @@ func TestSupervisedFactoryProbesAfterCooldown(t *testing.T) {
 	}
 	// Broken now; before cooldown elapses the delegate is not called.
 	before := f.calls.Load()
-	if _, err := sf.New(context.Background()); !errors.Is(err, registry.ErrBroken) {
+	if _, err := sf.New(context.Background()); !errors.Is(err, ErrBroken) {
 		t.Fatalf("got %v, want ErrBroken before cooldown", err)
 	}
 	if f.calls.Load() != before {
@@ -149,7 +147,7 @@ func TestSupervisedFactoryProbesAfterCooldown(t *testing.T) {
 
 	// Advance just short of the cooldown: still broken, still no delegate call.
 	clk.Advance(29 * time.Second)
-	if _, err := sf.New(context.Background()); !errors.Is(err, registry.ErrBroken) {
+	if _, err := sf.New(context.Background()); !errors.Is(err, ErrBroken) {
 		t.Fatalf("got %v, want ErrBroken just before cooldown end", err)
 	}
 	if f.calls.Load() != before {
@@ -169,13 +167,13 @@ func TestSupervisedFactoryProbesAfterCooldown(t *testing.T) {
 func TestSupervisedFactorySuccessfulProbeClearsBroken(t *testing.T) {
 	f := &scriptedFactory{}
 	f.failing.Store(true)
-	clk := newFakeClock()
-	sf := registry.NewSupervisedFactoryForTest(f, testSupConfig(), clk.Now)
+	clk := newSupClock()
+	sf := newSupervisedFactory(f, testSupConfig(), clk.Now)
 
 	for range 3 {
 		_, _ = sf.New(context.Background())
 	}
-	if _, err := sf.New(context.Background()); !errors.Is(err, registry.ErrBroken) {
+	if _, err := sf.New(context.Background()); !errors.Is(err, ErrBroken) {
 		t.Fatalf("expected broken, got %v", err)
 	}
 
@@ -198,8 +196,8 @@ func TestSupervisedFactorySuccessfulProbeClearsBroken(t *testing.T) {
 func TestSupervisedFactoryFailedProbeRearmsCooldown(t *testing.T) {
 	f := &scriptedFactory{}
 	f.failing.Store(true)
-	clk := newFakeClock()
-	sf := registry.NewSupervisedFactoryForTest(f, testSupConfig(), clk.Now)
+	clk := newSupClock()
+	sf := newSupervisedFactory(f, testSupConfig(), clk.Now)
 
 	for range 3 {
 		_, _ = sf.New(context.Background())
@@ -212,7 +210,7 @@ func TestSupervisedFactoryFailedProbeRearmsCooldown(t *testing.T) {
 
 	// Immediately broken again: the delegate is not called and the cooldown holds.
 	before := f.calls.Load()
-	if _, err := sf.New(context.Background()); !errors.Is(err, registry.ErrBroken) {
+	if _, err := sf.New(context.Background()); !errors.Is(err, ErrBroken) {
 		t.Fatalf("after failed probe: got %v, want ErrBroken", err)
 	}
 	if f.calls.Load() != before {
@@ -221,7 +219,7 @@ func TestSupervisedFactoryFailedProbeRearmsCooldown(t *testing.T) {
 
 	// The cooldown restarted from the failed probe, so a partial advance stays broken.
 	clk.Advance(20 * time.Second)
-	if _, err := sf.New(context.Background()); !errors.Is(err, registry.ErrBroken) {
+	if _, err := sf.New(context.Background()); !errors.Is(err, ErrBroken) {
 		t.Fatalf("re-armed cooldown not honored: got %v, want ErrBroken", err)
 	}
 	// Crossing the re-armed cooldown allows another probe.
@@ -235,11 +233,75 @@ func TestSupervisedFactoryFailedProbeRearmsCooldown(t *testing.T) {
 	}
 }
 
+// gateFactory fails its first failUntil calls (to trip the breaker), then blocks
+// the next call (the recovery probe) until released and fails it too, so a test
+// can hold a probe in flight while a burst of concurrent callers races in. The
+// probe failing keeps the breaker armed, so late arrivals also see ErrBroken —
+// making the single-flight count deterministic.
+type gateFactory struct {
+	calls     atomic.Int64
+	failUntil int64
+	entered   chan struct{}
+	release   chan struct{}
+}
+
+func (f *gateFactory) New(_ context.Context) (Session, error) {
+	if n := f.calls.Add(1); n <= f.failUntil {
+		return nil, errSpawn
+	}
+	select {
+	case f.entered <- struct{}{}:
+	default:
+	}
+	<-f.release
+	return nil, errSpawn
+}
+
+// The recovery probe is single-flight: when a burst of callers arrives just past
+// the cooldown, exactly one reaches the delegate and the rest fast-fail.
+func TestSupervisedFactoryProbeIsSingleFlight(t *testing.T) {
+	f := &gateFactory{failUntil: 3, entered: make(chan struct{}, 1), release: make(chan struct{})}
+	clk := newSupClock()
+	sf := newSupervisedFactory(f, testSupConfig(), clk.Now)
+
+	for range 3 { // trip the breaker
+		_, _ = sf.New(context.Background())
+	}
+	clk.Advance(31 * time.Second) // cooldown elapsed
+
+	const callers = 32
+	var broken atomic.Int64
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := sf.New(context.Background()); errors.Is(err, ErrBroken) {
+				broken.Add(1)
+			}
+		}()
+	}
+
+	<-f.entered      // the single probe is now in flight, blocked in the delegate
+	close(f.release) // let the probe fail, which keeps the breaker armed
+	wg.Wait()
+
+	// Exactly one caller was the probe (and got the delegate error, not ErrBroken);
+	// every other caller fast-failed with ErrBroken.
+	if got := broken.Load(); got != callers-1 {
+		t.Errorf("%d callers got ErrBroken, want %d (one was the single-flight probe)", got, callers-1)
+	}
+	// 3 trip calls + exactly 1 probe call reached the delegate; no second probe.
+	if got := f.calls.Load(); got != 4 {
+		t.Errorf("delegate called %d times, want 4 (3 trips + 1 probe)", got)
+	}
+}
+
 func TestSupervisedFactoryAppliesDefaults(t *testing.T) {
 	f := &scriptedFactory{}
 	f.failing.Store(true)
 	// Zero config -> package defaults (a threshold > 1 and a real cooldown).
-	sf := registry.NewSupervisedFactory(f, registry.SupervisorConfig{})
+	sf := NewSupervisedFactory(f, SupervisorConfig{})
 
 	// A single failure must not trip the breaker under the default threshold; the
 	// delegate error is returned, not ErrBroken.
@@ -248,10 +310,7 @@ func TestSupervisedFactoryAppliesDefaults(t *testing.T) {
 		t.Fatalf("got %v, want the delegate error under default threshold", err)
 	}
 	// A second failure also stays under the default threshold (which is > 2).
-	if _, err := sf.New(context.Background()); !errors.Is(err, registry.ErrBroken) && !errors.Is(err, errSpawn) {
-		t.Fatalf("unexpected error class: %v", err)
-	}
-	if errors.Is(err, registry.ErrBroken) {
+	if _, err := sf.New(context.Background()); errors.Is(err, ErrBroken) {
 		t.Fatal("default threshold tripped after a single failure")
 	}
 }
@@ -259,7 +318,7 @@ func TestSupervisedFactoryAppliesDefaults(t *testing.T) {
 func TestSupervisedFactoryConcurrentNewIsRaceClean(t *testing.T) {
 	f := &scriptedFactory{}
 	f.failing.Store(true)
-	sf := registry.NewSupervisedFactory(f, registry.SupervisorConfig{MaxConsecutiveFailures: 5, BrokenCooldown: time.Hour})
+	sf := NewSupervisedFactory(f, SupervisorConfig{MaxConsecutiveFailures: 5, BrokenCooldown: time.Hour})
 
 	var wg sync.WaitGroup
 	for range 64 {
@@ -273,10 +332,7 @@ func TestSupervisedFactoryConcurrentNewIsRaceClean(t *testing.T) {
 
 	// After a storm of concurrent failures the supervisor is broken and the next
 	// call short-circuits with ErrBroken. (Run under -race to catch data races.)
-	if _, e := sf.New(context.Background()); !errors.Is(e, registry.ErrBroken) {
+	if _, e := sf.New(context.Background()); !errors.Is(e, ErrBroken) {
 		t.Errorf("after concurrent failures got %v, want ErrBroken", e)
 	}
 }
-
-// Compile-time assertion that the supervisor satisfies the pool's Factory.
-var _ registry.Factory = (*registry.SupervisedFactory)(nil)

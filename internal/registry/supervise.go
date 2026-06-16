@@ -59,23 +59,16 @@ type SupervisedFactory struct {
 	failures    int
 	broken      bool
 	brokenUntil time.Time
+	probing     bool
 }
 
 // Compile-time assertion that SupervisedFactory satisfies Factory.
 var _ Factory = (*SupervisedFactory)(nil)
 
 // NewSupervisedFactory wraps delegate with crash-loop storm prevention. Zero or
-// negative config fields fall back to package defaults. It uses the wall clock;
-// tests that need deterministic cooldown timing use NewSupervisedFactoryForTest.
+// negative config fields fall back to package defaults.
 func NewSupervisedFactory(delegate Factory, cfg SupervisorConfig) *SupervisedFactory {
 	return newSupervisedFactory(delegate, cfg, time.Now)
-}
-
-// NewSupervisedFactoryForTest is NewSupervisedFactory with an injectable clock,
-// for deterministic cooldown timing in tests. Production code uses
-// NewSupervisedFactory.
-func NewSupervisedFactoryForTest(delegate Factory, cfg SupervisorConfig, now func() time.Time) *SupervisedFactory {
-	return newSupervisedFactory(delegate, cfg, now)
 }
 
 func newSupervisedFactory(delegate Factory, cfg SupervisorConfig, now func() time.Time) *SupervisedFactory {
@@ -94,23 +87,31 @@ func newSupervisedFactory(delegate Factory, cfg SupervisorConfig, now func() tim
 // the consecutive-failure count and clears the breaker; failure increments the
 // count and, on reaching MaxConsecutiveFailures, opens the breaker for
 // BrokenCooldown. The first New after the cooldown is a single probe — a
-// successful probe clears the breaker, a failed probe re-arms the cooldown.
+// successful probe clears the breaker, a failed probe re-arms the cooldown. The
+// recovery probe is single-flight: while broken, exactly one caller past the
+// cooldown reaches the delegate and the rest fast-fail with ErrBroken, so a
+// burst at the cooldown boundary cannot become its own little spawn storm. When
+// healthy, New does not serialize — concurrent spawns proceed in parallel.
 func (f *SupervisedFactory) New(ctx context.Context) (Session, error) {
 	f.mu.Lock()
-	if f.broken && f.now().Before(f.brokenUntil) {
-		f.mu.Unlock()
-		return nil, ErrBroken
+	if f.broken {
+		if f.now().Before(f.brokenUntil) || f.probing {
+			f.mu.Unlock()
+			return nil, ErrBroken
+		}
+		// Cooldown elapsed and no probe in flight: this call is the single-flight
+		// recovery probe.
+		f.probing = true
 	}
-	// Either healthy, or broken but past the cooldown: this call proceeds as a
-	// normal attempt (and, when broken, serves as the single recovery probe). The
-	// lock is released across the delegate call so concurrent New calls — and the
-	// downstream spawn itself — are not serialized behind one another.
+	// The lock is released across the delegate call so healthy concurrent spawns
+	// are not serialized behind one another.
 	f.mu.Unlock()
 
 	sess, err := f.delegate.New(ctx)
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.probing = false
 	if err != nil {
 		f.failures++
 		if f.failures >= f.cfg.MaxConsecutiveFailures {
