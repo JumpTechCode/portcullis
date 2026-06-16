@@ -1,5 +1,7 @@
 package domain
 
+import "context"
+
 // This file declares the port interfaces that cross Portcullis package
 // boundaries. Concrete packages satisfy them structurally and never import their
 // consumers, which keeps the internal import graph acyclic. Cross-boundary data
@@ -23,4 +25,24 @@ type Decider interface {
 // description of a tool it may not call (design §8).
 type CatalogFilter interface {
 	Filter(client Identity, full Catalog) Catalog
+}
+
+// HandlerFunc executes a call and returns its result. It is the unit the
+// pipeline composes; the chain terminates in a HandlerFunc backed by a
+// Dispatcher.
+type HandlerFunc func(ctx context.Context, call *Call) (*Result, error)
+
+// Stage is one element of the per-call security chain. It wraps the next handler
+// à la net/http middleware: it may short-circuit before calling next (for
+// example, a policy denial), or call next and post-process the result (for
+// example, outbound redaction).
+type Stage interface {
+	Handle(ctx context.Context, call *Call, next HandlerFunc) (*Result, error)
+}
+
+// Dispatcher routes a call to its owning downstream session and executes it. It
+// is the base the pipeline terminates in; routing is owned by aggregation and
+// execution by the registry.
+type Dispatcher interface {
+	Dispatch(ctx context.Context, call *Call) (*Result, error)
 }
