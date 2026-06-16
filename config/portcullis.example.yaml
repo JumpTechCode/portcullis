@@ -1,0 +1,75 @@
+# Example Portcullis configuration.
+#
+# Copy this file to config/portcullis.yaml and adjust it for your environment.
+# Secrets are never written here: each credential is read from an environment
+# variable named below, so this file is safe to keep in version control.
+
+# Address the gateway listens on. Bind to localhost unless you intentionally
+# expose the gateway and have set allowed_origins accordingly.
+listen: "127.0.0.1:8080"
+
+# Origins permitted by the DNS-rebinding guard. Requests with any other Origin
+# header are rejected at the edge.
+allowed_origins:
+  - "http://localhost"
+  - "vscode-webview://*"
+
+# Client identities. Each API key is read from the named environment variable
+# and compared in constant time.
+clients:
+  - id: claude-desktop
+    api_key_env: PORTCULLIS_KEY_CLAUDE
+  - id: ci-bot
+    api_key_env: PORTCULLIS_KEY_CI
+
+# Downstream MCP servers the gateway proxies to.
+downstreams:
+  - name: github
+    transport: stdio
+    command: ["npx", "-y", "@modelcontextprotocol/server-github"]
+    session_mode: per_client            # per_client (default) | shared
+    pool:
+      max: 16
+      acquire_timeout: 2s               # fail fast when the pool is exhausted
+      idle_ttl: 90s                     # reap idle subprocesses
+    secrets:
+      GITHUB_TOKEN: { env: GH_TOKEN }   # injected into the subprocess environment
+    health:
+      interval: 30s
+
+  - name: search
+    transport: http
+    url: https://mcp.example.com/mcp
+    secrets:
+      Authorization: { env: SEARCH_BEARER }   # injected as a request header
+
+# Deny-by-default policy. A client may call a tool only when an explicit rule
+# allows it. Wildcards pin to the tool set observed at the last allowlist sync.
+policy:
+  default: deny
+  rules:
+    - client: claude-desktop
+      allow: ["github__create_issue", "github__list_issues", "search__*"]
+    - client: ci-bot
+      allow: ["github__create_issue"]
+
+# Outbound redaction. Injected secret values are always redacted; these
+# patterns add PII rules. The anchor is a cheap literal that gates the regex.
+redaction:
+  patterns:
+    - name: aws-key
+      regex: 'AKIA[0-9A-Z]{16}'
+      anchor: 'AKIA'
+  max_result_bytes: 1048576
+
+# Structured, post-redaction audit log.
+audit:
+  sink: stdout                          # stdout | file:/var/log/portcullis/audit.jsonl
+  buffer: 10000                         # bounded; non-blocking handoff from the hot path
+  high_water_mark: 0.85                 # shed success records above this; reserve headroom for security records
+  flush:
+    max_records: 100
+    max_interval: 50ms
+  fsync_interval: 1s
+  overflow: shed                        # shed (default) | block
+  security_block_timeout: 250ms         # security records block up to this, else fail closed

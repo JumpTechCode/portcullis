@@ -1,0 +1,31 @@
+# Compiled binaries and build output
+/portcullis
+/bin/
+/dist/
+
+# Test and coverage artifacts
+*.test
+*.out
+coverage.html
+coverage.xml
+*.prof
+
+# Go workspace files (local only)
+go.work
+go.work.sum
+
+# Operator configuration with environment-specific values
+# (the committed template is config/portcullis.example.yaml)
+/config/portcullis.yaml
+
+# Internal working docs — keep ADRs (docs/adr), ignore everything else
+docs/superpowers/
+
+# Assistant / Claude Code files — never committed
+.claude/
+CLAUDE.md
+
+# OS and editor cruft
+.DS_Store
+*.swp
+*~
