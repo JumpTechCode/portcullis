@@ -52,6 +52,9 @@ type managed struct {
 // its own ClientSession. There is one Manager per gateway; it is safe for
 // concurrent use.
 type Manager struct {
+	// downstreams is written once in NewManager and never mutated thereafter.
+	// That immutability is what lets Dispatch and ClientSession.Close read it
+	// without a lock from any goroutine.
 	downstreams map[string]managed
 }
 
@@ -206,20 +209,28 @@ func (cs *ClientSession) perClientSession(ctx context.Context, name string, pool
 }
 
 // discardPerClient drops a suspect cached session so the next call re-acquires a
-// fresh one. It clears the entry only if it still holds ds (a concurrent call may
-// already have replaced it) and returns the session's pool slot via Discard.
+// fresh one. Because perClientSession releases the entry lock before the call,
+// several concurrent calls can share one cached session from a single Acquire; if
+// they all fail, only the caller that wins the clear-race (still finds e.sess ==
+// ds) must Discard it — otherwise one Acquire would be returned to the pool many
+// times, corrupting the permit count and the Max bound. Losers (e.sess already
+// cleared, or replaced by a freshly re-acquired session) skip the Discard.
 func (cs *ClientSession) discardPerClient(name string, pool *Pool, ds DownstreamSession) {
 	cs.mu.Lock()
 	e := cs.entries[name]
 	cs.mu.Unlock()
-	if e != nil {
-		e.mu.Lock()
-		if e.sess == ds {
-			e.sess = nil
-		}
-		e.mu.Unlock()
+	if e == nil {
+		return
 	}
-	pool.Discard(ds)
+	e.mu.Lock()
+	won := e.sess == ds
+	if won {
+		e.sess = nil
+	}
+	e.mu.Unlock()
+	if won {
+		pool.Discard(ds)
+	}
 }
 
 // Close discards every cached per_client session, returning each to its pool,

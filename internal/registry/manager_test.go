@@ -22,10 +22,22 @@ type fakeDownstream struct {
 	callErr error
 	calls   atomic.Int32
 	closed  atomic.Bool
+
+	// arrived and release, when set, gate CallTool so a test can hold several
+	// concurrent calls inside the same cached session at once: each call signals
+	// arrived.Done() on entry, then blocks until release is closed.
+	arrived *sync.WaitGroup
+	release chan struct{}
 }
 
 func (f *fakeDownstream) CallTool(_ context.Context, tool string, _ json.RawMessage) (*domain.Result, error) {
 	f.calls.Add(1)
+	if f.arrived != nil {
+		f.arrived.Done()
+	}
+	if f.release != nil {
+		<-f.release
+	}
 	if f.callErr != nil {
 		return nil, f.callErr
 	}
@@ -47,15 +59,18 @@ func (f *fakeDownstream) Close() error {
 // fakeDSFactory creates fakeDownstreams, counting creations and retaining each
 // for inspection. callErr, if set, is given to every session it creates.
 type fakeDSFactory struct {
-	callErr  error
-	created  atomic.Int32
+	callErr error
+	arrived *sync.WaitGroup
+	release chan struct{}
+	created atomic.Int32
+
 	mu       sync.Mutex
 	sessions []*fakeDownstream
 }
 
 func (f *fakeDSFactory) New(context.Context) (registry.Session, error) {
 	id := int(f.created.Add(1))
-	s := &fakeDownstream{id: id, callErr: f.callErr}
+	s := &fakeDownstream{id: id, callErr: f.callErr, arrived: f.arrived, release: f.release}
 	f.mu.Lock()
 	f.sessions = append(f.sessions, s)
 	f.mu.Unlock()
@@ -303,6 +318,83 @@ func TestDispatchAcquireError(t *testing.T) {
 	cs := mgr.NewClientSession()
 	if _, err := cs.Dispatch(context.Background(), callTo("ds", "t")); err == nil {
 		t.Error("Dispatch over a closed pool returned no error")
+	}
+}
+
+// TestConcurrentErrorDiscardDoesNotCorruptPool is the regression test for the
+// concurrent per_client discard bug: several calls share one cached session (one
+// Acquire), and when they all fail at the transport each tries to discard it. The
+// session — and its single pool permit — must be returned exactly once, not once
+// per failing call, or the pool's in-use count and Max bound are corrupted.
+func TestConcurrentErrorDiscardDoesNotCorruptPool(t *testing.T) {
+	const n = 20
+	var arrived sync.WaitGroup
+	arrived.Add(n)
+	f := &fakeDSFactory{
+		callErr: errors.New("transport boom"),
+		arrived: &arrived,
+		release: make(chan struct{}),
+	}
+	pool := registry.NewPool(f, registry.PoolConfig{Max: 4, AcquireTimeout: 2 * time.Second})
+	mgr, err := registry.NewManager([]registry.ManagedDownstream{{Name: "ds", Mode: registry.PerClient, Pool: pool}})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	t.Cleanup(func() { _ = mgr.Close() })
+	cs := mgr.NewClientSession()
+
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			_, _ = cs.Dispatch(context.Background(), callTo("ds", "t"))
+		}()
+	}
+	arrived.Wait()   // all n calls are inside CallTool on the one cached session
+	close(f.release) // release them to fail together → concurrent discardPerClient
+	wg.Wait()
+
+	if got := f.created.Load(); got != 1 {
+		t.Fatalf("created %d sessions, want 1 (single-flight)", got)
+	}
+	// Exactly one Acquire and one Discard: in-use returns to zero. The bug drove
+	// this negative (one acquire returned to the pool n times).
+	if st := pool.Stats(); st.InUse != 0 {
+		t.Errorf("pool InUse = %d after the error burst, want 0 (permit over-return)", st.InUse)
+	}
+}
+
+func TestDispatchPerClientMultipleDownstreams(t *testing.T) {
+	fa, fb := &fakeDSFactory{}, &fakeDSFactory{}
+	poolA := registry.NewPool(fa, registry.PoolConfig{Max: 4})
+	poolB := registry.NewPool(fb, registry.PoolConfig{Max: 4})
+	mgr, err := registry.NewManager([]registry.ManagedDownstream{
+		{Name: "a", Mode: registry.PerClient, Pool: poolA},
+		{Name: "b", Mode: registry.Shared, Pool: poolB},
+	})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	t.Cleanup(func() { _ = mgr.Close() })
+	cs := mgr.NewClientSession()
+	ctx := context.Background()
+
+	for i := 0; i < 2; i++ {
+		if _, err := cs.Dispatch(ctx, callTo("a", "ta")); err != nil {
+			t.Fatalf("dispatch a: %v", err)
+		}
+		if _, err := cs.Dispatch(ctx, callTo("b", "tb")); err != nil {
+			t.Fatalf("dispatch b: %v", err)
+		}
+	}
+	// Each downstream is served independently: per_client "a" caches one session;
+	// shared "b" reuses its pooled session. The two never cross.
+	if got := fa.created.Load(); got != 1 {
+		t.Errorf("downstream a created %d sessions, want 1 (per_client cache)", got)
+	}
+	if got := fb.created.Load(); got != 1 {
+		t.Errorf("downstream b created %d sessions, want 1 (shared reuse)", got)
 	}
 }
 
