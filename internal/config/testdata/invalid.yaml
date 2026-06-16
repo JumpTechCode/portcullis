@@ -1,0 +1,22 @@
+# Parses cleanly (all known fields) but is invalid: transport is not stdio/http.
+listen: "127.0.0.1:8080"
+allowed_origins: ["http://localhost"]
+
+clients:
+  - id: solo
+    api_key_env: PORTCULLIS_KEY_SOLO
+
+downstreams:
+  - name: github
+    transport: carrier-pigeon
+    command: ["server-github"]
+    pool: { max: 4 }
+
+policy:
+  default: deny
+
+redaction:
+  max_result_bytes: 1048576
+
+audit:
+  sink: stdout
