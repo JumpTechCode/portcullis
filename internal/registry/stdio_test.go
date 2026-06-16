@@ -38,11 +38,6 @@ func TestHelperProcess(t *testing.T) {
 	os.Exit(0)
 }
 
-// greetIn is the input to the greet tool.
-type greetIn struct {
-	Name string `json:"name"`
-}
-
 // echoEnvIn is the input to the echo_env tool.
 type echoEnvIn struct {
 	Var string `json:"var"`
@@ -84,17 +79,6 @@ func helperFactory(t *testing.T, secret string) *registry.StdioFactory {
 		},
 		TerminateDuration: 2 * time.Second,
 	})
-}
-
-// downstream type-asserts a pool Session to the richer DownstreamSession the
-// factory returns, failing the test if the assertion does not hold.
-func downstream(t *testing.T, s registry.Session) registry.DownstreamSession {
-	t.Helper()
-	ds, ok := s.(registry.DownstreamSession)
-	if !ok {
-		t.Fatalf("factory session %T does not implement DownstreamSession", s)
-	}
-	return ds
 }
 
 func TestStdioSessionCloseIsIdempotent(t *testing.T) {
@@ -315,25 +299,4 @@ func TestStdioFactoryConnectFailure(t *testing.T) {
 	if _, err := f.New(ctx); err == nil {
 		t.Error("New against a non-MCP command returned no error")
 	}
-}
-
-// containsString reports whether the raw JSON result content contains the given
-// substring after decoding (the content is the marshaled CallToolResult).
-func containsString(t *testing.T, content json.RawMessage, sub string) bool {
-	t.Helper()
-	return len(content) > 0 && indexOf(string(content), sub) >= 0
-}
-
-// indexOf is a tiny strings.Index wrapper kept local to avoid importing strings
-// solely for one call in tests.
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	if sub == "" {
-		return 0
-	}
-	return -1
 }

@@ -10,81 +10,28 @@ package registry
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
-	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-
-	"github.com/JumpTechCode/portcullis/internal/domain"
 )
 
 // stdioSession is a DownstreamSession backed by a local subprocess speaking MCP
-// over stdin/stdout. It owns both the SDK client session and the underlying
-// command so it can both shut the protocol down cleanly and guarantee the
-// process group is reaped (ADR-0006).
+// over stdin/stdout. It embeds the shared sdkSession for the protocol behavior
+// and adds ownership of the underlying command, so it can both shut the protocol
+// down cleanly and guarantee the process group is reaped (ADR-0006).
 type stdioSession struct {
-	cs  *mcp.ClientSession
+	sdkSession
 	cmd *exec.Cmd
 
-	closeOnce sync.Once
-	closeErr  error
+	closeOnce onceCloser
 }
 
 // Compile-time assertion that stdioSession satisfies DownstreamSession.
 var _ DownstreamSession = (*stdioSession)(nil)
-
-// CallTool invokes the named downstream tool. The raw JSON arguments are passed
-// through to the SDK (which marshals json.RawMessage verbatim), and the result
-// is marshaled whole to JSON so the outbound redactor can scan every byte the
-// downstream returned, including error content.
-func (s *stdioSession) CallTool(ctx context.Context, tool string, args json.RawMessage) (*domain.Result, error) {
-	params := &mcp.CallToolParams{Name: tool, Arguments: args}
-	res, err := s.cs.CallTool(ctx, params)
-	if err != nil {
-		return nil, fmt.Errorf("call tool %q: %w", tool, err)
-	}
-	content, err := json.Marshal(res)
-	if err != nil {
-		return nil, fmt.Errorf("marshal result of tool %q: %w", tool, err)
-	}
-	return &domain.Result{Content: content, IsError: res.IsError}, nil
-}
-
-// ListTools returns one page of the downstream's advertised tools. The cursor is
-// forwarded as-is and the SDK's next cursor is returned for the caller to
-// continue pagination.
-func (s *stdioSession) ListTools(ctx context.Context, cursor string) ([]ToolInfo, string, error) {
-	res, err := s.cs.ListTools(ctx, &mcp.ListToolsParams{Cursor: cursor})
-	if err != nil {
-		return nil, "", fmt.Errorf("list tools: %w", err)
-	}
-	tools := make([]ToolInfo, 0, len(res.Tools))
-	for _, t := range res.Tools {
-		schema, err := marshalSchema(t.InputSchema)
-		if err != nil {
-			return nil, "", fmt.Errorf("marshal input schema for tool %q: %w", t.Name, err)
-		}
-		tools = append(tools, ToolInfo{
-			Name:        t.Name,
-			Description: t.Description,
-			InputSchema: schema,
-		})
-	}
-	return tools, res.NextCursor, nil
-}
-
-// Ping checks downstream liveness by delegating to the SDK's ping.
-func (s *stdioSession) Ping(ctx context.Context) error {
-	if err := s.cs.Ping(ctx, nil); err != nil {
-		return fmt.Errorf("ping downstream: %w", err)
-	}
-	return nil
-}
 
 // Pid reports the subprocess id. It supports lifecycle assertions and is not
 // part of DownstreamSession; the dispatcher does not need it.
@@ -107,13 +54,8 @@ func (s *stdioSession) Pid() int {
 // kill targets the negative PID, and a second kill after the process has been
 // reaped could signal an unrelated process group that recycled the PID.
 func (s *stdioSession) Close() error {
-	s.closeOnce.Do(func() {
-		var firstErr error
-		if s.cs != nil {
-			if err := s.cs.Close(); err != nil {
-				firstErr = fmt.Errorf("close downstream session: %w", err)
-			}
-		}
+	return s.closeOnce.do(func() error {
+		firstErr := s.closeSession()
 		if s.cmd != nil && s.cmd.Process != nil {
 			if err := killProcessGroup(s.cmd.Process.Pid); err != nil && !errors.Is(err, os.ErrProcessDone) && !isNoSuchProcess(err) {
 				if firstErr == nil {
@@ -121,23 +63,8 @@ func (s *stdioSession) Close() error {
 				}
 			}
 		}
-		s.closeErr = firstErr
+		return firstErr
 	})
-	return s.closeErr
-}
-
-// marshalSchema renders an SDK tool input schema to raw JSON. From the client
-// side the SDK delivers the schema as a decoded value (commonly a
-// map[string]any); marshaling round-trips it. A nil schema yields nil bytes.
-func marshalSchema(schema any) (json.RawMessage, error) {
-	if schema == nil {
-		return nil, nil
-	}
-	b, err := json.Marshal(schema)
-	if err != nil {
-		return nil, err
-	}
-	return b, nil
 }
 
 // StdioConfig configures a downstream subprocess transport. Env is the full set
@@ -202,7 +129,7 @@ func (f *StdioFactory) New(ctx context.Context) (Session, error) {
 		}
 		return nil, fmt.Errorf("connect downstream %q: %w", f.cfg.Command[0], err)
 	}
-	return &stdioSession{cs: cs, cmd: cmd}, nil
+	return &stdioSession{sdkSession: sdkSession{cs: cs}, cmd: cmd}, nil
 }
 
 // childEnv layers the configured extra variables over a copy of the gateway's
