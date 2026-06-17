@@ -17,6 +17,7 @@ func TestCheckAllowsDeclaredEdges(t *testing.T) {
 		{"redact", []string{"domain"}},
 		{"pipeline", []string{"domain"}},
 		{"edge", []string{"domain", "pipeline"}},
+		{"watch", nil},
 		{"app", []string{"domain", "policy", "redact", "pipeline", "edge", "registry"}},
 	}
 	for _, c := range cases {

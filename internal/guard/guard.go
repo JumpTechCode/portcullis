@@ -43,6 +43,7 @@ var allowedEdges = map[string]map[string]bool{
 	"registry":   {"domain": true},
 	"pipeline":   {"domain": true},
 	"edge":       {"domain": true, "pipeline": true},
+	"watch":      {},
 }
 
 // rootPackages are composition roots permitted to import any internal package.
