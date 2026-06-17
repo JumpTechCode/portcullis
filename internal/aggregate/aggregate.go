@@ -27,14 +27,24 @@ import (
 )
 
 // Tool is a single tool exactly as a downstream reports it, before namespacing.
+// Every field other than Name is carried through verbatim to the namespaced
+// [domain.Tool]; the raw-JSON fields are treated as immutable, so callers must
+// not mutate the bytes.
 type Tool struct {
 	// Name is the tool's own name on its downstream (for example "create_issue").
 	Name string
+	// Title is the tool's optional human-readable display name.
+	Title string
 	// Description is the human-readable description the downstream provides.
 	Description string
-	// InputSchema is the tool's JSON Schema for its arguments, carried through
-	// verbatim. It is treated as immutable; callers must not mutate the bytes.
+	// InputSchema is the tool's JSON Schema for its arguments.
 	InputSchema json.RawMessage
+	// OutputSchema is the tool's optional structured-result JSON Schema, or nil.
+	OutputSchema json.RawMessage
+	// Annotations is the tool's optional annotations as raw JSON, or nil.
+	Annotations json.RawMessage
+	// Icons is the tool's optional icon set as raw JSON, or nil.
+	Icons json.RawMessage
 }
 
 // Listing is one downstream's complete set of reported tools.
@@ -76,7 +86,10 @@ func Build(listings []Listing) (domain.Catalog, error) {
 		seenDownstreams[l.Downstream] = true
 
 		seenTools := make(map[string]bool, len(l.Tools))
-		for _, tool := range l.Tools {
+		// Index rather than range by value: Tool carries several metadata fields,
+		// so a per-iteration copy is needless.
+		for i := range l.Tools {
+			tool := &l.Tools[i]
 			if tool.Name == "" {
 				return domain.Catalog{}, fmt.Errorf(
 					"aggregate: downstream %q reported a tool with an empty name", l.Downstream,
@@ -96,9 +109,13 @@ func Build(listings []Listing) (domain.Catalog, error) {
 			seenTools[tool.Name] = true
 
 			tools = append(tools, domain.Tool{
-				Ref:         domain.ToolRef{Downstream: l.Downstream, Tool: tool.Name},
-				Description: tool.Description,
-				InputSchema: tool.InputSchema,
+				Ref:          domain.ToolRef{Downstream: l.Downstream, Tool: tool.Name},
+				Title:        tool.Title,
+				Description:  tool.Description,
+				InputSchema:  tool.InputSchema,
+				OutputSchema: tool.OutputSchema,
+				Annotations:  tool.Annotations,
+				Icons:        tool.Icons,
 			})
 		}
 	}
@@ -143,11 +160,11 @@ func Page(catalog domain.Catalog, cursor string, size int) (page domain.Catalog,
 	})
 
 	selected := make([]domain.Tool, 0, size)
-	for _, t := range sorted {
-		if cursor != "" && t.Ref.Namespaced() <= after {
+	for i := range sorted {
+		if cursor != "" && sorted[i].Ref.Namespaced() <= after {
 			continue
 		}
-		selected = append(selected, t)
+		selected = append(selected, sorted[i])
 		if len(selected) == size {
 			break
 		}
@@ -187,8 +204,8 @@ func Resolve(namespaced string, knownDownstreams map[string]bool) (domain.ToolRe
 // hasNameAfter reports whether sorted (ascending by namespaced name) contains any
 // tool whose name is strictly greater than name.
 func hasNameAfter(sorted []domain.Tool, name string) bool {
-	for _, t := range sorted {
-		if t.Ref.Namespaced() > name {
+	for i := range sorted {
+		if sorted[i].Ref.Namespaced() > name {
 			return true
 		}
 	}

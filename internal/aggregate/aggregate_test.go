@@ -25,8 +25,8 @@ func listing(downstream string, tools ...string) aggregate.Listing {
 // order, so tests can assert on ordering and membership concisely.
 func namespacedNames(c domain.Catalog) []string {
 	names := make([]string, len(c.Tools))
-	for i, t := range c.Tools {
-		names[i] = t.Ref.Namespaced()
+	for i := range c.Tools {
+		names[i] = c.Tools[i].Ref.Namespaced()
 	}
 	return names
 }
@@ -55,6 +55,39 @@ func TestBuildNamespacesTools(t *testing.T) {
 	}
 	if string(tool.InputSchema) != `{"type":"object"}` {
 		t.Errorf("input schema = %q, want it carried through unchanged", tool.InputSchema)
+	}
+}
+
+func TestBuildCarriesToolMetadata(t *testing.T) {
+	got, err := aggregate.Build([]aggregate.Listing{
+		{Downstream: "github", Tools: []aggregate.Tool{{
+			Name:         "create_issue",
+			Title:        "Create Issue",
+			Description:  "Open an issue",
+			InputSchema:  json.RawMessage(`{"type":"object"}`),
+			OutputSchema: json.RawMessage(`{"type":"object","properties":{"url":{"type":"string"}}}`),
+			Annotations:  json.RawMessage(`{"readOnlyHint":true}`),
+			Icons:        json.RawMessage(`[{"src":"https://example.com/i.png"}]`),
+		}}},
+	})
+	if err != nil {
+		t.Fatalf("Build returned an unexpected error: %v", err)
+	}
+	if len(got.Tools) != 1 {
+		t.Fatalf("Build produced %d tools, want 1", len(got.Tools))
+	}
+	tool := got.Tools[0]
+	if tool.Title != "Create Issue" {
+		t.Errorf("title = %q, want it carried through", tool.Title)
+	}
+	if string(tool.OutputSchema) != `{"type":"object","properties":{"url":{"type":"string"}}}` {
+		t.Errorf("output schema = %s, want it carried through unchanged", tool.OutputSchema)
+	}
+	if string(tool.Annotations) != `{"readOnlyHint":true}` {
+		t.Errorf("annotations = %s, want them carried through unchanged", tool.Annotations)
+	}
+	if string(tool.Icons) != `[{"src":"https://example.com/i.png"}]` {
+		t.Errorf("icons = %s, want them carried through unchanged", tool.Icons)
 	}
 }
 
