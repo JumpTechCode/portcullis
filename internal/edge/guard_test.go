@@ -154,6 +154,41 @@ func TestGuardRejectsBadKey(t *testing.T) {
 	}
 }
 
+// TestGuardAuthenticatesVariableLengthKeys pins the behavior that constant-time
+// authentication must preserve regardless of how keys are compared: keys of very
+// different lengths each resolve to their own identity, and a wrong key — even
+// one that shares a real key's length — is rejected. The digest-based comparison
+// (fixed-width, length-independent) must satisfy exactly this.
+func TestGuardAuthenticatesVariableLengthKeys(t *testing.T) {
+	clients := []edge.ClientKey{
+		{ID: "short", Key: "x"},
+		{ID: "long", Key: "a-considerably-longer-api-key-value-0123456789"},
+	}
+
+	serve := func(key string) (domain.Identity, int) {
+		var got domain.Identity
+		var reached bool
+		req := httptest.NewRequest(http.MethodPost, "http://localhost/mcp", http.NoBody)
+		req.Header.Set("Origin", "http://localhost")
+		req.Header.Set("Authorization", bearer(key))
+		rec := httptest.NewRecorder()
+		edge.NewGuard([]string{"http://localhost"}, clients).
+			Wrap(identityRecorder(t, &got, &reached)).ServeHTTP(rec, req)
+		return got, rec.Code
+	}
+
+	if id, code := serve("x"); code != http.StatusOK || id.ID != "short" {
+		t.Errorf("short key: identity=%q status=%d, want \"short\"/200", id.ID, code)
+	}
+	if id, code := serve("a-considerably-longer-api-key-value-0123456789"); code != http.StatusOK || id.ID != "long" {
+		t.Errorf("long key: identity=%q status=%d, want \"long\"/200", id.ID, code)
+	}
+	// Wrong key the same length as the "short" client's key must still fail.
+	if _, code := serve("y"); code != http.StatusUnauthorized {
+		t.Errorf("wrong same-length key: status=%d, want 401", code)
+	}
+}
+
 func TestGuardRejectsMalformedAuthScheme(t *testing.T) {
 	for _, authz := range []string{
 		"key-ci-bot",       // no scheme

@@ -10,6 +10,7 @@
 package edge
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
 	"net/http"
 	"strings"
@@ -28,6 +29,15 @@ type ClientKey struct {
 	Key string
 }
 
+// clientDigest binds a client identity to the SHA-256 digest of its API key.
+// Authentication compares these fixed-width digests rather than the raw keys, so
+// the comparison cost is the same for every client and the response time cannot
+// vary with a key's length (#24).
+type clientDigest struct {
+	id     string
+	digest [sha256.Size]byte
+}
+
 // Guard is the edge request guard: Origin/DNS-rebinding validation followed by
 // constant-time API-key authentication. It is safe for concurrent use, and its
 // allowed origins and client keys are hot-reloadable: Reload swaps them
@@ -36,7 +46,7 @@ type ClientKey struct {
 type Guard struct {
 	mu             sync.RWMutex
 	allowedOrigins []string
-	clients        []ClientKey
+	digests        []clientDigest
 }
 
 // NewGuard builds a request guard from the permitted Origins and the resolved
@@ -58,28 +68,31 @@ func (g *Guard) Reload(allowedOrigins []string, clients []ClientKey) {
 	g.set(allowedOrigins, clients)
 }
 
-// set copies and stores the origins and client keys under the write lock, so a
-// later mutation of the caller's slices cannot change the guard's decisions.
+// set copies the origins and reduces each client key to its SHA-256 digest under
+// the write lock, so a later mutation of the caller's slices cannot change the
+// guard's decisions and the raw key bytes are not retained beyond construction.
 func (g *Guard) set(allowedOrigins []string, clients []ClientKey) {
 	origins := make([]string, len(allowedOrigins))
 	copy(origins, allowedOrigins)
-	keys := make([]ClientKey, len(clients))
-	copy(keys, clients)
+	digests := make([]clientDigest, len(clients))
+	for i, c := range clients {
+		digests[i] = clientDigest{id: c.ID, digest: sha256.Sum256([]byte(c.Key))}
+	}
 
 	g.mu.Lock()
 	g.allowedOrigins = origins
-	g.clients = keys
+	g.digests = digests
 	g.mu.Unlock()
 }
 
-// snapshot returns the current origins and client keys under the read lock. The
-// returned slices are the guard's own backing arrays, which set never mutates in
-// place (it always assigns fresh slices), so reading them after the lock is
-// released is safe against a concurrent Reload.
-func (g *Guard) snapshot() (origins []string, clients []ClientKey) {
+// snapshot returns the current origins and client digests under the read lock.
+// The returned slices are the guard's own backing arrays, which set never
+// mutates in place (it always assigns fresh slices), so reading them after the
+// lock is released is safe against a concurrent Reload.
+func (g *Guard) snapshot() (origins []string, digests []clientDigest) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	return g.allowedOrigins, g.clients
+	return g.allowedOrigins, g.digests
 }
 
 // Wrap returns a handler that applies the guard before delegating to next. A
@@ -137,16 +150,22 @@ func (g *Guard) originAllowed(origin string) bool {
 // constant-time comparison against every configured key. It deliberately does
 // not stop at the first match: comparing all entries keeps the work independent
 // of which client matched (and of whether any did), so the response time does
-// not leak how far a guessed key got. A non-match returns the zero identity and
-// false.
+// not leak how far a guessed key got.
+//
+// The comparison is over SHA-256 digests, not the raw keys. Digests are always
+// 32 bytes, so every comparison is equal-width; this removes the residual signal
+// that subtle.ConstantTimeCompare returns early when two slices differ in length,
+// which otherwise let the comparison cost vary with the presented key's length
+// relative to the configured keys' (#24). A non-match returns the zero identity
+// and false.
 func (g *Guard) authenticate(presented string) (domain.Identity, bool) {
-	_, clients := g.snapshot()
+	_, digests := g.snapshot()
+	presentedDigest := sha256.Sum256([]byte(presented))
 	var id string
 	found := 0
-	pb := []byte(presented)
-	for _, c := range clients {
-		if subtle.ConstantTimeCompare(pb, []byte(c.Key)) == 1 {
-			id = c.ID
+	for _, c := range digests {
+		if subtle.ConstantTimeCompare(presentedDigest[:], c.digest[:]) == 1 {
+			id = c.id
 			found = 1
 		}
 	}
