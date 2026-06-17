@@ -13,6 +13,7 @@ import (
 	"crypto/subtle"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/JumpTechCode/portcullis/internal/domain"
 )
@@ -28,9 +29,12 @@ type ClientKey struct {
 }
 
 // Guard is the edge request guard: Origin/DNS-rebinding validation followed by
-// constant-time API-key authentication. It is safe for concurrent use; its
-// state is read-only after construction.
+// constant-time API-key authentication. It is safe for concurrent use, and its
+// allowed origins and client keys are hot-reloadable: Reload swaps them
+// atomically behind a read-write mutex so a SIGHUP config reload never drops a
+// request in flight (design §5).
 type Guard struct {
+	mu             sync.RWMutex
 	allowedOrigins []string
 	clients        []ClientKey
 }
@@ -41,13 +45,41 @@ type Guard struct {
 // exactly. The inputs are copied so later mutation by the caller cannot change
 // the guard's decisions.
 func NewGuard(allowedOrigins []string, clients []ClientKey) *Guard {
-	g := &Guard{
-		allowedOrigins: make([]string, len(allowedOrigins)),
-		clients:        make([]ClientKey, len(clients)),
-	}
-	copy(g.allowedOrigins, allowedOrigins)
-	copy(g.clients, clients)
+	g := &Guard{}
+	g.set(allowedOrigins, clients)
 	return g
+}
+
+// Reload atomically replaces the guard's allowed origins and client keys for a
+// SIGHUP/file-watch config reload (design §5). Requests already in flight finish
+// against whichever snapshot they read; subsequent requests see the new one. It
+// is safe to call concurrently with request handling.
+func (g *Guard) Reload(allowedOrigins []string, clients []ClientKey) {
+	g.set(allowedOrigins, clients)
+}
+
+// set copies and stores the origins and client keys under the write lock, so a
+// later mutation of the caller's slices cannot change the guard's decisions.
+func (g *Guard) set(allowedOrigins []string, clients []ClientKey) {
+	origins := make([]string, len(allowedOrigins))
+	copy(origins, allowedOrigins)
+	keys := make([]ClientKey, len(clients))
+	copy(keys, clients)
+
+	g.mu.Lock()
+	g.allowedOrigins = origins
+	g.clients = keys
+	g.mu.Unlock()
+}
+
+// snapshot returns the current origins and client keys under the read lock. The
+// returned slices are the guard's own backing arrays, which set never mutates in
+// place (it always assigns fresh slices), so reading them after the lock is
+// released is safe against a concurrent Reload.
+func (g *Guard) snapshot() (origins []string, clients []ClientKey) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.allowedOrigins, g.clients
 }
 
 // Wrap returns a handler that applies the guard before delegating to next. A
@@ -88,7 +120,8 @@ func (g *Guard) originAllowed(origin string) bool {
 	if origin == "" {
 		return true
 	}
-	for _, allowed := range g.allowedOrigins {
+	allowedOrigins, _ := g.snapshot()
+	for _, allowed := range allowedOrigins {
 		if prefix, wild := strings.CutSuffix(allowed, "*"); wild {
 			if strings.HasPrefix(origin, prefix) {
 				return true
@@ -107,10 +140,11 @@ func (g *Guard) originAllowed(origin string) bool {
 // not leak how far a guessed key got. A non-match returns the zero identity and
 // false.
 func (g *Guard) authenticate(presented string) (domain.Identity, bool) {
+	_, clients := g.snapshot()
 	var id string
 	found := 0
 	pb := []byte(presented)
-	for _, c := range g.clients {
+	for _, c := range clients {
 		if subtle.ConstantTimeCompare(pb, []byte(c.Key)) == 1 {
 			id = c.ID
 			found = 1

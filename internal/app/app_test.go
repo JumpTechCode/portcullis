@@ -203,3 +203,57 @@ func TestPoolListerUnknownDownstream(t *testing.T) {
 		t.Fatal("expected an error for an unknown downstream")
 	}
 }
+
+func TestGatewayReloadRejectsInvalidConfig(t *testing.T) {
+	t.Setenv("PORTCULLIS_TEST_KEY", "supersecret")
+	g, err := Build(minimalConfig(), "test")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	t.Cleanup(func() { _ = g.Shutdown() })
+
+	bad := minimalConfig()
+	bad.Clients = nil // invalid: at least one client is required
+	if err := g.Reload(bad); err == nil {
+		t.Fatal("expected a reload of an invalid config to be rejected")
+	}
+}
+
+func TestGatewayReloadAppliesNewClientKey(t *testing.T) {
+	t.Setenv("PORTCULLIS_TEST_KEY", "key-one")
+	g, err := Build(minimalConfig(), "test")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	t.Cleanup(func() { _ = g.Shutdown() })
+
+	srv := httptest.NewServer(g.Handler())
+	defer srv.Close()
+
+	post := func(key string) int {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/", strings.NewReader("{}"))
+		req.Header.Set("Authorization", "Bearer "+key)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if post("key-two") != http.StatusUnauthorized {
+		t.Fatal("precondition: key-two must be unauthorized before reload")
+	}
+
+	t.Setenv("PORTCULLIS_TEST_KEY", "key-two")
+	if err := g.Reload(minimalConfig()); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+
+	if code := post("key-two"); code == http.StatusUnauthorized {
+		t.Error("after reload, key-two should authenticate (got 401)")
+	}
+	if code := post("key-one"); code != http.StatusUnauthorized {
+		t.Errorf("after reload, the old key-one should be rejected, got %d", code)
+	}
+}

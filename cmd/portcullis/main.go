@@ -7,6 +7,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -55,5 +56,34 @@ func run(configPath string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// SIGHUP hot-reloads the client + policy maps from the same config file,
+	// atomically and without dropping connections; topology changes are
+	// restart-required (design §5). A failed or invalid reload is logged and the
+	// running configuration stands.
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	defer signal.Stop(hup)
+	go func() {
+		for range hup {
+			reload(gateway, configPath)
+		}
+	}()
+
 	return gateway.Run(ctx)
+}
+
+// reload re-reads the configuration file and applies a hot reload, logging the
+// outcome. A read or validation failure leaves the running configuration in
+// place rather than taking the gateway down.
+func reload(gateway *app.Gateway, configPath string) {
+	newCfg, err := config.Load(configPath)
+	if err != nil {
+		log.Printf("portcullis: reload failed: %v", err)
+		return
+	}
+	if err := gateway.Reload(newCfg); err != nil {
+		log.Printf("portcullis: reload rejected: %v", err)
+		return
+	}
+	log.Print("portcullis: configuration reloaded")
 }
