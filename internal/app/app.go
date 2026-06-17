@@ -414,7 +414,10 @@ func resolveClientKeys(cfg *config.Config) ([]edge.ClientKey, error) {
 	for _, c := range cfg.Clients {
 		key := os.Getenv(c.APIKeyEnv)
 		if key == "" {
-			return nil, fmt.Errorf("app: client %q: api key env var %q is not set", c.ID, c.APIKeyEnv)
+			// Identify the client by its configured id, not by the environment
+			// variable name: the name is an internal detail, and keeping it out of
+			// the error keeps it out of any log the error is later written to.
+			return nil, fmt.Errorf("app: client %q: API key environment variable is not set", c.ID)
 		}
 		clients = append(clients, edge.ClientKey{ID: c.ID, Key: key})
 	}
