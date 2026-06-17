@@ -164,18 +164,53 @@ func handleList(ctx context.Context, sess Session, req mcp.Request) (mcp.Result,
 		return nil, err
 	}
 	tools := make([]*mcp.Tool, 0, len(page.Tools))
-	for _, t := range page.Tools {
-		schema := t.InputSchema
-		if len(schema) == 0 {
-			schema = emptyObjectSchema
+	for i := range page.Tools {
+		mt, err := toMCPTool(&page.Tools[i])
+		if err != nil {
+			return nil, err
 		}
-		tools = append(tools, &mcp.Tool{
-			Name:        t.Ref.Namespaced(),
-			Description: t.Description,
-			InputSchema: schema,
-		})
+		tools = append(tools, mt)
 	}
 	return &mcp.ListToolsResult{Tools: tools, NextCursor: next}, nil
+}
+
+// toMCPTool renders a catalog tool as the SDK tool the client receives. The
+// downstream metadata the gateway carries as opaque raw JSON — output schema,
+// annotations, icons — is reconstructed into the SDK's typed fields here, at the
+// transport boundary, so the rest of the gateway stays free of SDK types. Each
+// optional field is set only when present, so an absent one is omitted on the
+// wire rather than serialized as null. A tool whose downstream advertised no
+// input schema is given the empty-object schema, since the field is required.
+func toMCPTool(t *domain.Tool) (*mcp.Tool, error) {
+	schema := t.InputSchema
+	if len(schema) == 0 {
+		schema = emptyObjectSchema
+	}
+	mt := &mcp.Tool{
+		Name:        t.Ref.Namespaced(),
+		Title:       t.Title,
+		Description: t.Description,
+		InputSchema: schema,
+	}
+	if len(t.OutputSchema) > 0 {
+		// json.RawMessage marshals verbatim through the SDK's any-typed field.
+		mt.OutputSchema = t.OutputSchema
+	}
+	if len(t.Annotations) > 0 {
+		var ann mcp.ToolAnnotations
+		if err := json.Unmarshal(t.Annotations, &ann); err != nil {
+			return nil, fmt.Errorf("edge: tool %q: decode annotations: %w", t.Ref.Namespaced(), err)
+		}
+		mt.Annotations = &ann
+	}
+	if len(t.Icons) > 0 {
+		var icons []mcp.Icon
+		if err := json.Unmarshal(t.Icons, &icons); err != nil {
+			return nil, fmt.Errorf("edge: tool %q: decode icons: %w", t.Ref.Namespaced(), err)
+		}
+		mt.Icons = icons
+	}
+	return mt, nil
 }
 
 // handleCall serves tools/call by running the named tool through the session's

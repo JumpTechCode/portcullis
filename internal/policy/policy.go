@@ -122,9 +122,9 @@ func (e *Engine) Decide(client domain.Identity, t domain.ToolRef) domain.Decisio
 // entirely, including its schema and description (design §8).
 func (e *Engine) Filter(client domain.Identity, full domain.Catalog) domain.Catalog {
 	allowed := make([]domain.Tool, 0, len(full.Tools))
-	for _, t := range full.Tools {
-		if e.Decide(client, t.Ref).Allow {
-			allowed = append(allowed, t)
+	for i := range full.Tools {
+		if e.Decide(client, full.Tools[i].Ref).Allow {
+			allowed = append(allowed, full.Tools[i])
 		}
 	}
 	return domain.Catalog{Tools: allowed}
@@ -143,12 +143,13 @@ func (e *Engine) Sync(catalog domain.Catalog) {
 		if len(cp.wildcards) == 0 {
 			continue
 		}
-		for _, t := range catalog.Tools {
-			if cp.wildcards[t.Ref.Downstream] {
+		for i := range catalog.Tools {
+			ref := catalog.Tools[i].Ref
+			if cp.wildcards[ref.Downstream] {
 				if pinned[clientID] == nil {
 					pinned[clientID] = make(map[string]bool)
 				}
-				pinned[clientID][t.Ref.Namespaced()] = true
+				pinned[clientID][ref.Namespaced()] = true
 			}
 		}
 	}

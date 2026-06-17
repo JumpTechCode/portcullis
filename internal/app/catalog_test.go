@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -50,6 +51,41 @@ func TestCatalogCacheBuildsMergesAndSyncs(t *testing.T) {
 	// Sync pinned the wildcard so the client may call the observed tool.
 	if !eng.Decide(domain.Identity{ID: "c"}, domain.ToolRef{Downstream: "github", Tool: "create_issue"}).Allow {
 		t.Error("wildcard was not pinned to the synced catalog")
+	}
+}
+
+func TestCatalogCacheCarriesToolMetadata(t *testing.T) {
+	lister := func(_ context.Context, _ string) ([]registry.ToolInfo, error) {
+		return []registry.ToolInfo{{
+			Name:         "create_issue",
+			Title:        "Create Issue",
+			Description:  "open",
+			OutputSchema: json.RawMessage(`{"type":"object"}`),
+			Annotations:  json.RawMessage(`{"readOnlyHint":true}`),
+			Icons:        json.RawMessage(`[{"src":"https://example.com/i.png"}]`),
+		}}, nil
+	}
+	c := &catalogCache{downstreams: []string{"github"}, list: lister, syncer: policy.New(false, nil)}
+
+	cat, err := c.get(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	tool, ok := cat.Lookup("github__create_issue")
+	if !ok {
+		t.Fatal("github__create_issue missing from catalog")
+	}
+	if tool.Title != "Create Issue" {
+		t.Errorf("title = %q, want it threaded through toListing", tool.Title)
+	}
+	if string(tool.OutputSchema) != `{"type":"object"}` {
+		t.Errorf("output schema = %s, want it threaded through toListing", tool.OutputSchema)
+	}
+	if string(tool.Annotations) != `{"readOnlyHint":true}` {
+		t.Errorf("annotations = %s, want them threaded through toListing", tool.Annotations)
+	}
+	if string(tool.Icons) != `[{"src":"https://example.com/i.png"}]` {
+		t.Errorf("icons = %s, want them threaded through toListing", tool.Icons)
 	}
 }
 

@@ -92,14 +92,20 @@ func (c *catalogCache) current() (domain.Catalog, bool) {
 }
 
 // toListing converts a downstream's reported tools into an aggregate.Listing,
-// carrying each tool's description and raw input schema through unmodified.
+// carrying each tool's description, schemas, and display metadata through
+// unmodified.
 func toListing(downstream string, tools []registry.ToolInfo) aggregate.Listing {
 	out := aggregate.Listing{Downstream: downstream, Tools: make([]aggregate.Tool, len(tools))}
-	for i, t := range tools {
+	for i := range tools {
+		t := &tools[i]
 		out.Tools[i] = aggregate.Tool{
-			Name:        t.Name,
-			Description: t.Description,
-			InputSchema: t.InputSchema,
+			Name:         t.Name,
+			Title:        t.Title,
+			Description:  t.Description,
+			InputSchema:  t.InputSchema,
+			OutputSchema: t.OutputSchema,
+			Annotations:  t.Annotations,
+			Icons:        t.Icons,
 		}
 	}
 	return out

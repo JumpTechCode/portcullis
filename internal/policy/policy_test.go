@@ -142,9 +142,9 @@ func TestFilterWithWildcardAfterSync(t *testing.T) {
 	if len(got.Tools) != 2 {
 		t.Errorf("Filter returned %d tools, want 2 github tools", len(got.Tools))
 	}
-	for _, tl := range got.Tools {
-		if tl.Ref.Downstream != "github" {
-			t.Errorf("Filter leaked a non-github tool: %s", tl.Ref)
+	for i := range got.Tools {
+		if got.Tools[i].Ref.Downstream != "github" {
+			t.Errorf("Filter leaked a non-github tool: %s", got.Tools[i].Ref)
 		}
 	}
 }

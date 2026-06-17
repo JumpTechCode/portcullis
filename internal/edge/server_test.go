@@ -112,6 +112,51 @@ func TestServerListsToolsAcrossPages(t *testing.T) {
 	}
 }
 
+func TestServerListSurfacesToolMetadata(t *testing.T) {
+	ctx := context.Background()
+	tool := domain.Tool{
+		Ref:          toolRef("github", "create_issue"),
+		Title:        "Create Issue",
+		Description:  "open an issue",
+		InputSchema:  json.RawMessage(`{"type":"object"}`),
+		OutputSchema: json.RawMessage(`{"type":"object","properties":{"url":{"type":"string"}}}`),
+		Annotations:  json.RawMessage(`{"readOnlyHint":true,"title":"Create Issue"}`),
+		Icons:        json.RawMessage(`[{"src":"https://example.com/i.png","mimeType":"image/png"}]`),
+	}
+	fake := &fakeSession{
+		listTools: func(_ context.Context, _ string) (domain.Catalog, string, error) {
+			return domain.Catalog{Tools: []domain.Tool{tool}}, "", nil
+		},
+	}
+	cs := connect(t, buildServer("portcullis", "test", fake))
+
+	res, err := cs.ListTools(ctx, &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if len(res.Tools) != 1 {
+		t.Fatalf("got %d tools, want 1", len(res.Tools))
+	}
+	got := res.Tools[0]
+
+	if got.Name != "github__create_issue" || got.Title != "Create Issue" {
+		t.Errorf("name/title = %q/%q, want namespaced name and carried title", got.Name, got.Title)
+	}
+	if got.Annotations == nil || !got.Annotations.ReadOnlyHint || got.Annotations.Title != "Create Issue" {
+		t.Errorf("annotations not surfaced to client: %+v", got.Annotations)
+	}
+	if len(got.Icons) != 1 || got.Icons[0].Source != "https://example.com/i.png" {
+		t.Errorf("icons not surfaced to client: %+v", got.Icons)
+	}
+	out, err := json.Marshal(got.OutputSchema)
+	if err != nil {
+		t.Fatalf("marshal received output schema: %v", err)
+	}
+	if !strings.Contains(string(out), `"url"`) {
+		t.Errorf("output schema not surfaced to client: %s", out)
+	}
+}
+
 func TestServerCallRoutesAndReturnsResult(t *testing.T) {
 	ctx := context.Background()
 	want := &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "created #1"}}}
