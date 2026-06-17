@@ -20,6 +20,9 @@ jobs:
   build-test:
     name: build & test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
@@ -40,6 +43,12 @@ jobs:
           fi
       - name: test (race) and coverage gate
         run: ./scripts/coverage.sh 80
+      - name: upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage.out
+          use_oidc: true
+          fail_ci_if_error: false
 
   lint:
     name: golangci-lint
