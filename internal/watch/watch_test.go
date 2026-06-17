@@ -35,6 +35,22 @@ func TestStatMissingFileIsNotAnError(t *testing.T) {
 	}
 }
 
+func TestStatNonNotExistErrorPropagates(t *testing.T) {
+	// A regular file used as a path component yields ENOTDIR, not ErrNotExist,
+	// so stat must surface it rather than report the file as absent.
+	file := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := stat(filepath.Join(file, "child"))
+	if err == nil {
+		t.Fatal("stat through a non-directory parent returned nil error, want propagated error")
+	}
+	if st.ok {
+		t.Error("stat reported ok == true alongside a non-nil error")
+	}
+}
+
 func TestChanged(t *testing.T) {
 	base := time.Unix(1000, 0)
 	present := fileState{ok: true, modTime: base, size: 10}
