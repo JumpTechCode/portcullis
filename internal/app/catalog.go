@@ -82,6 +82,15 @@ func (c *catalogCache) get(ctx context.Context) (domain.Catalog, error) {
 	return cat, nil
 }
 
+// current returns the already-built catalog without triggering a build, and
+// whether it has been built. A config reload uses it to re-pin policy wildcards
+// against the live catalog without forcing a (possibly slow) first build.
+func (c *catalogCache) current() (domain.Catalog, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.catalog, c.built
+}
+
 // toListing converts a downstream's reported tools into an aggregate.Listing,
 // carrying each tool's description and raw input schema through unmodified.
 func toListing(downstream string, tools []registry.ToolInfo) aggregate.Listing {

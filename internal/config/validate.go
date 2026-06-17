@@ -53,7 +53,10 @@ func (c *Config) validateClients(add func(string, ...any)) map[string]bool {
 		case cl.APIKeyEnv == "":
 			add("client %q: api_key_env must not be empty", cl.ID)
 		case os.Getenv(cl.APIKeyEnv) == "":
-			add("client %q: api key env var %q is not set", cl.ID, cl.APIKeyEnv)
+			// Identify the client by its id rather than echoing the env var name:
+			// the name is an internal detail and must not flow into logs (the
+			// reload path logs validation errors).
+			add("client %q: api key environment variable is not set", cl.ID)
 		}
 	}
 	return ids

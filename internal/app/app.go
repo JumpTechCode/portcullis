@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
+	"reflect"
 	"sort"
 	"sync"
 	"time"
@@ -47,6 +49,15 @@ type Gateway struct {
 	audit   *audit.Writer
 	sink    *os.File // the audit file when the sink is a file; nil for stdout
 	grace   time.Duration
+
+	// Hot-reloadable state and the snapshot of the running topology used to detect
+	// restart-required changes on reload (design §5).
+	engine          *policy.Engine
+	guard           *edge.Guard
+	catalog         *catalogCache
+	origDownstreams []config.Downstream
+	origRedaction   config.Redaction
+	origAudit       config.Audit
 
 	shutdownOnce sync.Once
 	shutdownErr  error
@@ -136,13 +147,60 @@ func Build(cfg *config.Config, version string) (*Gateway, error) {
 	mux.Handle("/", mcpHandler)
 
 	return &Gateway{
-		server:  &http.Server{Addr: cfg.Listen, Handler: mux, ReadHeaderTimeout: 10 * time.Second},
-		handler: mux,
-		manager: manager,
-		audit:   auditWriter,
-		sink:    sinkFile,
-		grace:   defaultShutdownGrace,
+		server:          &http.Server{Addr: cfg.Listen, Handler: mux, ReadHeaderTimeout: 10 * time.Second},
+		handler:         mux,
+		manager:         manager,
+		audit:           auditWriter,
+		sink:            sinkFile,
+		grace:           defaultShutdownGrace,
+		engine:          engine,
+		guard:           guard,
+		catalog:         catalog,
+		origDownstreams: cfg.Downstreams,
+		origRedaction:   cfg.Redaction,
+		origAudit:       cfg.Audit,
 	}, nil
+}
+
+// Reload applies a configuration reload (SIGHUP / file-watch). Only the client
+// auth map and the policy rules are hot-reloaded — atomically, behind each
+// engine's lock, so no live session or request is dropped (design §5). The
+// reload is rejected as a whole if the new configuration is invalid, so a bad
+// edit never takes down the running gateway. Downstream topology, redaction, and
+// audit changes are restart-required; if any changed, the reload still applies
+// the client + policy parts and logs that a restart is needed for the rest.
+func (g *Gateway) Reload(newCfg *config.Config) error {
+	if err := newCfg.Validate(); err != nil {
+		return fmt.Errorf("app: rejected configuration reload: %w", err)
+	}
+
+	clients, err := resolveClientKeys(newCfg)
+	if err != nil {
+		return err
+	}
+	g.guard.Reload(newCfg.AllowedOrigins, clients)
+
+	g.engine.Reload(newCfg.Policy.Default == config.DefaultAllow, policyRules(newCfg.Policy.Rules))
+	// Re-pin wildcards against the live catalog so a reloaded wildcard rule admits
+	// the tools currently observed; if the catalog has not been built yet, the
+	// first build will sync it.
+	if cat, ok := g.catalog.current(); ok {
+		g.engine.Sync(cat)
+	}
+
+	if g.restartRequired(newCfg) {
+		log.Printf("portcullis: reload applied client + policy; downstream/redaction/audit changes require a restart")
+	}
+	return nil
+}
+
+// restartRequired reports whether newCfg changes anything outside the hot-reload
+// scope (downstream topology, redaction, or audit) relative to the running
+// configuration, which a reload cannot apply without rebuilding sessions.
+func (g *Gateway) restartRequired(newCfg *config.Config) bool {
+	return !reflect.DeepEqual(g.origDownstreams, newCfg.Downstreams) ||
+		!reflect.DeepEqual(g.origRedaction, newCfg.Redaction) ||
+		!reflect.DeepEqual(g.origAudit, newCfg.Audit)
 }
 
 // Handler returns the gateway's root HTTP handler (the guarded MCP endpoint plus
@@ -341,15 +399,29 @@ func buildAudit(cfg *config.Audit) (*audit.Writer, *os.File, error) {
 // buildGuard resolves each client's API key from the environment and builds the
 // edge request guard from the resolved keys and the configured allowed origins.
 func buildGuard(cfg *config.Config) (*edge.Guard, error) {
+	clients, err := resolveClientKeys(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return edge.NewGuard(cfg.AllowedOrigins, clients), nil
+}
+
+// resolveClientKeys resolves each configured client's API key from the
+// environment, failing fast on an unset variable. It backs both the initial
+// guard build and a reload.
+func resolveClientKeys(cfg *config.Config) ([]edge.ClientKey, error) {
 	clients := make([]edge.ClientKey, 0, len(cfg.Clients))
 	for _, c := range cfg.Clients {
 		key := os.Getenv(c.APIKeyEnv)
 		if key == "" {
-			return nil, fmt.Errorf("app: client %q: api key env var %q is not set", c.ID, c.APIKeyEnv)
+			// Identify the client by its configured id, not by the environment
+			// variable name: the name is an internal detail, and keeping it out of
+			// the error keeps it out of any log the error is later written to.
+			return nil, fmt.Errorf("app: client %q: API key environment variable is not set", c.ID)
 		}
 		clients = append(clients, edge.ClientKey{ID: c.ID, Key: key})
 	}
-	return edge.NewGuard(cfg.AllowedOrigins, clients), nil
+	return clients, nil
 }
 
 // poolLister returns the gateway-wide tool lister the catalog cache uses: it

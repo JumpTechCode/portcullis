@@ -35,15 +35,18 @@ type clientPolicy struct {
 	wildcards map[string]bool
 }
 
-// Engine evaluates access decisions and catalog filtering.
+// Engine evaluates access decisions and catalog filtering. Its rule set is
+// hot-reloadable: New builds it, Reload atomically swaps it, and every read takes
+// the read lock, so a SIGHUP reload never drops a live evaluation (design §5).
 type Engine struct {
+	mu sync.RWMutex
+	// defaultAllow, clients, and pinned are all guarded by mu so a reload can swap
+	// them atomically under the write lock while evaluations read under the read
+	// lock. pinned is the per-client set of namespaced tool names admitted by
+	// wildcards as of the last Sync.
 	defaultAllow bool
 	clients      map[string]clientPolicy
-
-	mu sync.RWMutex
-	// pinned is the per-client set of namespaced tool names admitted by wildcards
-	// as of the last Sync. Guarded by mu.
-	pinned map[string]map[string]bool
+	pinned       map[string]map[string]bool
 }
 
 // New builds an engine from compiled rules. defaultAllow makes every call
@@ -51,6 +54,29 @@ type Engine struct {
 // deny-by-default and only explicit allows pass. Input is assumed already
 // validated by the config layer.
 func New(defaultAllow bool, rules []Rule) *Engine {
+	return &Engine{
+		defaultAllow: defaultAllow,
+		clients:      compileRules(rules),
+		pinned:       make(map[string]map[string]bool),
+	}
+}
+
+// Reload atomically swaps the engine's default and rule set, for a SIGHUP/file-
+// watch config reload (design §5). It clears the wildcard pins computed for the
+// old rules, so a wildcard admits nothing until the caller re-Syncs against the
+// current catalog — a fail-closed transient (deny during reload), never an
+// over-permit. It is safe to call concurrently with Decide and Filter.
+func (e *Engine) Reload(defaultAllow bool, rules []Rule) {
+	clients := compileRules(rules)
+	e.mu.Lock()
+	e.defaultAllow = defaultAllow
+	e.clients = clients
+	e.pinned = make(map[string]map[string]bool)
+	e.mu.Unlock()
+}
+
+// compileRules turns the allow lists into per-client exact/wildcard sets.
+func compileRules(rules []Rule) map[string]clientPolicy {
 	clients := make(map[string]clientPolicy, len(rules))
 	for _, r := range rules {
 		cp := clients[r.Client]
@@ -66,15 +92,14 @@ func New(defaultAllow bool, rules []Rule) *Engine {
 		}
 		clients[r.Client] = cp
 	}
-	return &Engine{
-		defaultAllow: defaultAllow,
-		clients:      clients,
-		pinned:       make(map[string]map[string]bool),
-	}
+	return clients
 }
 
-// Decide reports whether the client may call the tool.
+// Decide reports whether the client may call the tool. It reads the rule set
+// under the read lock so a concurrent Reload swap is observed atomically.
 func (e *Engine) Decide(client domain.Identity, t domain.ToolRef) domain.Decision {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
 	if e.defaultAllow {
 		return domain.Allowed()
 	}
@@ -86,11 +111,7 @@ func (e *Engine) Decide(client domain.Identity, t domain.ToolRef) domain.Decisio
 	if cp.exact[name] {
 		return domain.Allowed()
 	}
-
-	e.mu.RLock()
-	admitted := e.pinned[client.ID][name]
-	e.mu.RUnlock()
-	if admitted {
+	if e.pinned[client.ID][name] {
 		return domain.Allowed()
 	}
 	return domain.Denied(domain.ReasonDeniedDefault)
@@ -111,8 +132,12 @@ func (e *Engine) Filter(client domain.Identity, full domain.Catalog) domain.Cata
 
 // Sync pins each client's wildcards to the tools present in the catalog. After
 // Sync, a wildcard admits exactly the matching tools observed here; tools that
-// appear later are denied until the next Sync.
+// appear later are denied until the next Sync. It holds the write lock across the
+// computation so it reads a consistent rule set even if a Reload runs
+// concurrently.
 func (e *Engine) Sync(catalog domain.Catalog) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	pinned := make(map[string]map[string]bool, len(e.clients))
 	for clientID, cp := range e.clients {
 		if len(cp.wildcards) == 0 {
@@ -127,9 +152,7 @@ func (e *Engine) Sync(catalog domain.Catalog) {
 			}
 		}
 	}
-	e.mu.Lock()
 	e.pinned = pinned
-	e.mu.Unlock()
 }
 
 // wildcardDownstream returns the downstream named by a wildcard allow entry

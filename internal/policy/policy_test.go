@@ -200,3 +200,66 @@ func TestConcurrentSyncDecideFilter(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestEngineReloadSwapsRules(t *testing.T) {
+	eng := policy.New(false, []policy.Rule{
+		{Client: "c", Allow: []string{"github__old"}},
+	})
+	client := domain.Identity{ID: "c"}
+
+	if !eng.Decide(client, domain.ToolRef{Downstream: "github", Tool: "old"}).Allow {
+		t.Fatal("precondition: old rule should allow github__old")
+	}
+
+	eng.Reload(false, []policy.Rule{{Client: "c", Allow: []string{"github__new"}}})
+
+	if eng.Decide(client, domain.ToolRef{Downstream: "github", Tool: "old"}).Allow {
+		t.Error("after reload, the removed rule must no longer allow github__old")
+	}
+	if !eng.Decide(client, domain.ToolRef{Downstream: "github", Tool: "new"}).Allow {
+		t.Error("after reload, the new rule should allow github__new")
+	}
+}
+
+func TestEngineReloadClearsStaleWildcardPins(t *testing.T) {
+	eng := policy.New(false, []policy.Rule{{Client: "c", Allow: []string{"github__*"}}})
+	eng.Sync(domain.Catalog{Tools: []domain.Tool{
+		{Ref: domain.ToolRef{Downstream: "github", Tool: "a"}},
+	}})
+	client := domain.Identity{ID: "c"}
+	if !eng.Decide(client, domain.ToolRef{Downstream: "github", Tool: "a"}).Allow {
+		t.Fatal("precondition: wildcard pin should allow github__a")
+	}
+
+	// A reload clears the pins computed for the old rules; until the next Sync a
+	// wildcard admits nothing (fail-closed).
+	eng.Reload(false, []policy.Rule{{Client: "c", Allow: []string{"github__*"}}})
+	if eng.Decide(client, domain.ToolRef{Downstream: "github", Tool: "a"}).Allow {
+		t.Error("reload should clear stale wildcard pins until the next Sync")
+	}
+	eng.Sync(domain.Catalog{Tools: []domain.Tool{
+		{Ref: domain.ToolRef{Downstream: "github", Tool: "a"}},
+	}})
+	if !eng.Decide(client, domain.ToolRef{Downstream: "github", Tool: "a"}).Allow {
+		t.Error("after re-Sync the wildcard pin should allow github__a again")
+	}
+}
+
+func TestEngineReloadIsConcurrencySafe(t *testing.T) {
+	eng := policy.New(false, []policy.Rule{{Client: "c", Allow: []string{"github__a"}}})
+	client := domain.Identity{ID: "c"}
+	ref := domain.ToolRef{Downstream: "github", Tool: "a"}
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 1000; i++ {
+			eng.Reload(false, []policy.Rule{{Client: "c", Allow: []string{"github__a"}}})
+		}
+		close(done)
+	}()
+	for i := 0; i < 1000; i++ {
+		_ = eng.Decide(client, ref)
+		eng.Filter(client, domain.Catalog{Tools: []domain.Tool{{Ref: ref}}})
+	}
+	<-done
+}

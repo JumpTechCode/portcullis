@@ -204,3 +204,55 @@ func TestIdentityFromContextAbsent(t *testing.T) {
 		t.Error("IdentityFromContext reported an identity on a bare context")
 	}
 }
+
+func TestGuardReloadSwapsClientsAndOrigins(t *testing.T) {
+	guard := edge.NewGuard([]string{"http://old"}, []edge.ClientKey{{ID: "a", Key: "k1"}})
+
+	serve := func(key, origin string) int {
+		var reached bool
+		var got domain.Identity
+		req := httptest.NewRequest(http.MethodPost, "http://localhost/mcp", http.NoBody)
+		req.Header.Set("Origin", origin)
+		req.Header.Set("Authorization", bearer(key))
+		rec := httptest.NewRecorder()
+		guard.Wrap(identityRecorder(t, &got, &reached)).ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	if serve("k1", "http://old") != http.StatusOK {
+		t.Fatal("precondition: original key + origin should pass")
+	}
+
+	guard.Reload([]string{"http://new"}, []edge.ClientKey{{ID: "b", Key: "k2"}})
+
+	if code := serve("k2", "http://new"); code != http.StatusOK {
+		t.Errorf("after reload, new key + origin: status = %d, want 200", code)
+	}
+	if code := serve("k1", "http://new"); code != http.StatusUnauthorized {
+		t.Errorf("after reload, the removed key should be rejected: status = %d, want 401", code)
+	}
+	if code := serve("k2", "http://old"); code != http.StatusForbidden {
+		t.Errorf("after reload, the removed origin should be rejected: status = %d, want 403", code)
+	}
+}
+
+func TestGuardReloadIsConcurrencySafe(t *testing.T) {
+	guard := edge.NewGuard([]string{"http://localhost"}, []edge.ClientKey{{ID: "a", Key: "k1"}})
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	h := guard.Wrap(next)
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 1000; i++ {
+			guard.Reload([]string{"http://localhost"}, []edge.ClientKey{{ID: "a", Key: "k1"}})
+		}
+		close(done)
+	}()
+	for i := 0; i < 1000; i++ {
+		req := httptest.NewRequest(http.MethodPost, "http://localhost/mcp", http.NoBody)
+		req.Header.Set("Origin", "http://localhost")
+		req.Header.Set("Authorization", bearer("k1"))
+		h.ServeHTTP(httptest.NewRecorder(), req)
+	}
+	<-done
+}
