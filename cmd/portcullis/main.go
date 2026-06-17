@@ -4,8 +4,15 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/JumpTechCode/portcullis/internal/app"
+	"github.com/JumpTechCode/portcullis/internal/config"
 )
 
 // version is the gateway version, stamped at release time via
@@ -14,6 +21,7 @@ var version = "dev"
 
 func main() {
 	showVersion := flag.Bool("version", false, "print the gateway version and exit")
+	configPath := flag.String("config", "portcullis.yaml", "path to the gateway configuration file")
 	flag.Parse()
 
 	if *showVersion {
@@ -21,7 +29,31 @@ func main() {
 		return
 	}
 
-	// The server bootstrap is assembled in internal/app and wired here in a
-	// later change; for now the binary reports its usage.
-	flag.Usage()
+	if err := run(*configPath); err != nil {
+		fmt.Fprintf(os.Stderr, "portcullis: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// run loads the configuration, builds the gateway, and serves it until an
+// interrupt or termination signal arrives, then shuts down gracefully. It is
+// separated from main so the failure path returns an error rather than exiting,
+// keeping main a thin shell.
+func run(configPath string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+
+	gateway, err := app.Build(cfg, version)
+	if err != nil {
+		return err
+	}
+
+	// SIGINT/SIGTERM cancel the context, which Run treats as a graceful-shutdown
+	// signal (stop accepting, drain in-flight, close sessions, flush audit).
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	return gateway.Run(ctx)
 }
