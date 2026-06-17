@@ -105,7 +105,7 @@ func (f *fakeFS) statFn(string) (fileState, error) {
 // driveWatcher runs w.Run on a manual tick channel and returns a function that
 // delivers one tick and blocks until the loop has consumed it (so assertions
 // are race-free), plus a cancel func.
-func driveWatcher(t *testing.T, w *Watcher) (tick func(), cancel func()) {
+func driveWatcher(t *testing.T, w *Watcher) (tick, cancel func()) {
 	t.Helper()
 	ticks := make(chan time.Time)
 	w.newTicker = func(time.Duration) (<-chan time.Time, func()) { return ticks, func() {} }
