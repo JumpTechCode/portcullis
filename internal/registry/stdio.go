@@ -111,8 +111,13 @@ func (f *StdioFactory) New(ctx context.Context) (Session, error) {
 		return nil, errors.New("stdio factory: empty command")
 	}
 
+	// The process lifetime is owned by Close (stdin-close → SIGTERM → SIGKILL of
+	// the process group, plus Pdeathsig), not by ctx: a pooled session outlives
+	// the request that created it, so binding the child to ctx via CommandContext
+	// would kill it the moment that request's context was cancelled. ctx still
+	// bounds the handshake below through client.Connect.
 	//nolint:gosec // G204: command is operator-configured downstream, not attacker input.
-	cmd := exec.CommandContext(ctx, f.cfg.Command[0], f.cfg.Command[1:]...)
+	cmd := exec.Command(f.cfg.Command[0], f.cfg.Command[1:]...)
 	cmd.Env = childEnv(f.cfg.Env)
 	cmd.SysProcAttr = newSysProcAttr()
 

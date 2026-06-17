@@ -81,6 +81,32 @@ func helperFactory(t *testing.T, secret string) *registry.StdioFactory {
 	})
 }
 
+func TestStdioSessionSurvivesCreatingContextCancel(t *testing.T) {
+	f := helperFactory(t, "unused")
+
+	// A pooled session is created during one request and reused across later
+	// ones, so cancelling the context that created it must not tear down the
+	// subprocess: its lifetime is owned by Close, not the creating context.
+	ctx, cancel := context.WithCancel(context.Background())
+	sess, err := f.New(ctx)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+
+	cancel()
+
+	ds, ok := sess.(registry.DownstreamSession)
+	if !ok {
+		t.Fatal("stdio session is not a DownstreamSession")
+	}
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer pingCancel()
+	if err := ds.Ping(pingCtx); err != nil {
+		t.Fatalf("session did not survive its creating context being cancelled: %v", err)
+	}
+}
+
 func TestStdioSessionCloseIsIdempotent(t *testing.T) {
 	f := helperFactory(t, "unused")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
