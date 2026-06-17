@@ -30,6 +30,10 @@ HTTP authorization.
   the operational cost, the client and policy maps support scoped hot-reload, so
   adding a client or rotating a key takes effect without a restart and without
   dropping live sessions.
+- The constant-time comparison is over fixed-width SHA-256 digests of the keys,
+  not the raw keys. Equal-width comparisons remove the residual signal that a
+  constant-time byte comparison still returns early when two values differ in
+  length, so the response time does not vary with the presented key's length.
 - The edge still enforces the protocol's transport-level protections — `Origin`
   validation against DNS rebinding, localhost binding by default, and protocol
   version negotiation — independently of the authentication mechanism.
