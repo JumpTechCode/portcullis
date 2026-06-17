@@ -257,3 +257,26 @@ func TestGatewayReloadAppliesNewClientKey(t *testing.T) {
 		t.Errorf("after reload, the old key-one should be rejected, got %d", code)
 	}
 }
+
+func TestExampleConfigLoadsAndBuilds(t *testing.T) {
+	// The shipped example config is an operator's entry point; this guards it
+	// against drifting from the implemented schema and wiring. Build performs no
+	// network or subprocess I/O, so loading and building it is safe and offline.
+	t.Setenv("PORTCULLIS_KEY_CLAUDE", "key-claude")
+	t.Setenv("PORTCULLIS_KEY_CI", "key-ci")
+	t.Setenv("GH_TOKEN", "gh-token")
+	t.Setenv("SEARCH_BEARER", "search-bearer")
+
+	cfg, err := config.Load("../../config/portcullis.example.yaml")
+	if err != nil {
+		t.Fatalf("loading the example config: %v", err)
+	}
+
+	g, err := Build(cfg, "test")
+	if err != nil {
+		t.Fatalf("building from the example config: %v", err)
+	}
+	if err := g.Shutdown(); err != nil {
+		t.Errorf("shutdown: %v", err)
+	}
+}
