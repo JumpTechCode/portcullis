@@ -22,6 +22,7 @@ The format follows Michael Nygard's
 - [0011 — Buffer-and-scan redaction for V1](0011-buffer-and-scan-redaction.md)
 - [0012 — Connection-level secret injection for V1; defer argument-level](0012-connection-level-secret-injection-for-v1.md)
 - [0013 — Per-session dispatch scoping and the downstream session manager](0013-per-session-dispatch-and-downstream-session-manager.md)
+- [0014 — Edge per-session MCP server: pass-through handler, injected session port, watcher teardown](0014-edge-per-session-mcp-server.md)
 
 ## Adding a record
 
