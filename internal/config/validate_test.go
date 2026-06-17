@@ -69,6 +69,28 @@ func TestValidateAcceptsValidConfig(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsLegitimateOrigins(t *testing.T) {
+	setValidEnv(t)
+
+	origins := []string{
+		"http://localhost",
+		"http://localhost:8080",
+		"https://app.example.com",
+		"vscode-webview://*",
+		"vscode-webview://abc123",
+		"app://*",
+	}
+	for _, o := range origins {
+		t.Run(o, func(t *testing.T) {
+			c := validConfig()
+			c.AllowedOrigins = []string{o}
+			if err := c.Validate(); err != nil {
+				t.Fatalf("legitimate origin %q rejected: %v", o, err)
+			}
+		})
+	}
+}
+
 func TestValidateRejects(t *testing.T) {
 	setValidEnv(t)
 
@@ -79,6 +101,17 @@ func TestValidateRejects(t *testing.T) {
 		mutate func(*config.Config)
 	}{
 		{"empty listen", func(c *config.Config) { c.Listen = "" }},
+
+		{"origin empty entry", func(c *config.Config) { c.AllowedOrigins = []string{""} }},
+		{"origin bare wildcard", func(c *config.Config) { c.AllowedOrigins = []string{"*"} }},
+		{"origin http host wildcard", func(c *config.Config) { c.AllowedOrigins = []string{"http://*"} }},
+		{"origin https host wildcard", func(c *config.Config) { c.AllowedOrigins = []string{"https://*"} }},
+		{"origin wss host wildcard", func(c *config.Config) { c.AllowedOrigins = []string{"wss://*"} }},
+		{"origin wildcard without scheme", func(c *config.Config) { c.AllowedOrigins = []string{"localhost*"} }},
+		{"origin wildcard empty scheme", func(c *config.Config) { c.AllowedOrigins = []string{"://*"} }},
+		{"origin exact without scheme", func(c *config.Config) { c.AllowedOrigins = []string{"localhost"} }},
+		{"origin exact with path", func(c *config.Config) { c.AllowedOrigins = []string{"http://localhost/app"} }},
+		{"origin exact empty host", func(c *config.Config) { c.AllowedOrigins = []string{"http://"} }},
 
 		{"no clients", func(c *config.Config) { c.Clients = nil }},
 		{"client empty id", func(c *config.Config) { c.Clients[0].ID = "" }},

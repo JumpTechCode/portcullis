@@ -26,6 +26,7 @@ func (c *Config) Validate() error {
 		add("listen must not be empty")
 	}
 
+	c.validateOrigins(add)
 	clientIDs := c.validateClients(add)
 	downstreamNames := c.validateDownstreams(add)
 	c.validatePolicy(add, clientIDs, downstreamNames)
@@ -33,6 +34,55 @@ func (c *Config) Validate() error {
 	c.validateAudit(add)
 
 	return errors.Join(errs...)
+}
+
+// networkOriginSchemes are the schemes whose authority is a network host.
+// Wildcarding the whole host of one of these ("http://*") matches an unbounded
+// set of network origins and defeats the rebinding guard, so it is rejected. An
+// opaque scheme (for example "vscode-webview://*") keeps the scheme itself as
+// the boundary and is allowed.
+var networkOriginSchemes = map[string]bool{
+	"http":  true,
+	"https": true,
+	"ws":    true,
+	"wss":   true,
+}
+
+// validateOrigins rejects allowed_origins entries that defeat the edge's
+// rebinding guard (design §8). The guard (internal/edge) is a pure matcher: an
+// entry matches exactly, or — when it ends in "*" — by the prefix before the
+// "*". That faithfully honors whatever it is given, so the judgement of whether
+// an entry is too broad belongs here, at the fail-fast config gate (#23).
+func (c *Config) validateOrigins(add func(string, ...any)) {
+	for i, o := range c.AllowedOrigins {
+		prefix, wild := strings.CutSuffix(o, "*")
+		switch {
+		case o == "":
+			add("allowed_origins[%d]: must not be empty", i)
+		case wild && prefix == "":
+			// A bare "*" yields an empty prefix and matches every Origin (allow-all).
+			add("allowed_origins[%d]: %q matches every origin; list explicit origins instead", i, o)
+		case wild:
+			scheme, host, ok := strings.Cut(prefix, "://")
+			switch {
+			case !ok || scheme == "":
+				add("allowed_origins[%d] (%q): a wildcard must follow a scheme, e.g. \"vscode-webview://*\"", i, o)
+			case host == "" && networkOriginSchemes[strings.ToLower(scheme)]:
+				add("allowed_origins[%d] (%q): wildcards every host of a network scheme; pin a host, e.g. %q", i, o, scheme+"://localhost")
+			}
+		default:
+			// An exact entry must be a bare origin: scheme://host[:port], with no
+			// path, query, or fragment — a real Origin header carries none, so an
+			// entry with one is dead config that never matches.
+			scheme, host, ok := strings.Cut(o, "://")
+			switch {
+			case !ok || scheme == "":
+				add("allowed_origins[%d] (%q): not a valid origin; want scheme://host[:port]", i, o)
+			case host == "" || strings.ContainsAny(host, "/?#"):
+				add("allowed_origins[%d] (%q): not a valid origin; an origin has no path, query, or fragment", i, o)
+			}
+		}
+	}
 }
 
 func (c *Config) validateClients(add func(string, ...any)) map[string]bool {
