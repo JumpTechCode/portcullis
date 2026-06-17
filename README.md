@@ -2,6 +2,8 @@
 
 [![ci](https://github.com/JumpTechCode/portcullis/actions/workflows/ci.yml/badge.svg)](https://github.com/JumpTechCode/portcullis/actions/workflows/ci.yml)
 [![codeql](https://github.com/JumpTechCode/portcullis/actions/workflows/codeql.yml/badge.svg)](https://github.com/JumpTechCode/portcullis/actions/workflows/codeql.yml)
+[![codecov](https://codecov.io/gh/JumpTechCode/portcullis/branch/main/graph/badge.svg)](https://codecov.io/gh/JumpTechCode/portcullis)
+[![Go Report Card](https://goreportcard.com/badge/github.com/JumpTechCode/portcullis)](https://goreportcard.com/report/github.com/JumpTechCode/portcullis)
 
 Portcullis is a security gateway for the [Model Context Protocol](https://modelcontextprotocol.io)
 (MCP). It presents itself to clients as a single MCP server and proxies their
@@ -104,6 +106,49 @@ security-load-bearing.
   secret values never reach the audit log. Security records (denials, redactions)
   take a durability path that fails the request closed rather than proceed
   un-audited ([ADR-0010](docs/adr/0010-async-audit-overflow-and-durability.md)).
+
+## Threat model
+
+The boundaries Portcullis defends, and the assumptions behind them, are stated
+explicitly so operators can judge what it does and does not protect.
+
+**Trust boundaries.**
+
+- *Client → gateway.* Clients are authenticated but otherwise untrusted: a
+  client may attempt any tool call, including ones it is not permitted to make.
+  The gateway is the policy decision and enforcement point.
+- *Gateway → downstream.* Downstream MCP servers are semi-trusted. They receive
+  only the calls policy allows and the credentials the gateway injects, but
+  their responses are treated as untrusted input and pass through redaction
+  before reaching a client or the audit log.
+- *Operator → gateway.* The configuration and the environment holding the
+  downstream secrets are trusted and assumed to be under the operator's control.
+
+**What each position can and cannot do.**
+
+- A malicious or compromised *client* cannot call tools outside its allowlist,
+  cannot enumerate tools it may not call (their schemas and descriptions are
+  withheld), and never receives downstream credentials.
+- A malicious *downstream* cannot widen a client's access by advertising new
+  tools after the last allowlist sync, and cannot exfiltrate injected secret
+  values that the redactor matches in results, errors, or notifications.
+- A *browser-based network attacker* is countered by the localhost bind and the
+  `Origin` / DNS-rebinding check.
+
+**Assumptions.**
+
+- The gateway binds to localhost (or another trusted network); it is not
+  hardened as an internet-facing edge.
+- The operator controls the configuration and the secret-bearing environment.
+- Redaction is exact-match on injected values plus configurable literal-gated
+  patterns. It operates on the literal bytes of a payload and does not decode
+  base64, percent-encoding, or other transforms, so a secret present only in an
+  encoded form may pass.
+
+**Security non-goals (V1).** Argument-level secret injection, client-schema
+stripping, true streaming-window redaction, per-tenant downstream isolation, and
+OAuth client authentication are out of scope. See [Scope](#scope) for the full
+list and the ADRs behind each boundary.
 
 ## Getting started
 
