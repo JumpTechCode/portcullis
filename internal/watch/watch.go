@@ -11,8 +11,10 @@
 package watch
 
 import (
+	"context"
 	"errors"
 	"io/fs"
+	"log"
 	"os"
 	"time"
 )
@@ -54,4 +56,71 @@ func changed(a, b fileState) bool {
 		return true
 	}
 	return !a.modTime.Equal(b.modTime) || a.size != b.size
+}
+
+// Watcher polls a file and calls onChange whenever the file's modification time
+// or size changes after Run begins.
+type Watcher struct {
+	path     string
+	interval time.Duration
+	onChange func()
+
+	// statFn and newTicker are seams for deterministic tests; production wiring
+	// uses the real filesystem and a real time.Ticker (set by New).
+	statFn    func(string) (fileState, error)
+	newTicker func(time.Duration) (<-chan time.Time, func())
+}
+
+// New returns a Watcher that polls path every interval and calls onChange after
+// each detected change. interval must be positive; the caller (cmd) validates
+// it before constructing the Watcher.
+func New(path string, interval time.Duration, onChange func()) *Watcher {
+	return &Watcher{
+		path:     path,
+		interval: interval,
+		onChange: onChange,
+		statFn:   stat,
+		newTicker: func(d time.Duration) (<-chan time.Time, func()) {
+			t := time.NewTicker(d)
+			return t.C, t.Stop
+		},
+	}
+}
+
+// Run polls the file until ctx is cancelled, then returns. It captures a
+// baseline at start so the first poll never fires a spurious change; thereafter
+// it fires onChange once per detected change. A transient not-exist is ignored
+// (the baseline is held until the file reappears); any other stat error is
+// logged once per error episode and never fires onChange or stops the loop.
+//
+// onChange runs synchronously on the polling goroutine, so it must not block: a
+// slow callback stalls polling and delays observing ctx cancellation. Callers
+// are expected to hand off (e.g. a non-blocking send) rather than do work inline.
+func (w *Watcher) Run(ctx context.Context) {
+	ticks, stop := w.newTicker(w.interval)
+	defer stop()
+
+	baseline, _ := w.statFn(w.path) // a stat error here surfaces on the first tick
+	inError := false
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticks:
+			cur, err := w.statFn(w.path)
+			if err != nil {
+				if !inError {
+					log.Printf("portcullis: cannot stat watched config %s: %v", w.path, err)
+					inError = true
+				}
+				continue
+			}
+			inError = false
+			if changed(baseline, cur) {
+				baseline = cur
+				w.onChange()
+			}
+		}
+	}
 }
