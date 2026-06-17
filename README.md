@@ -80,6 +80,18 @@ cp config/portcullis.example.yaml config/portcullis.yaml
 go run ./cmd/portcullis --config config/portcullis.yaml
 ```
 
+The gateway hot-reloads its client-auth and policy configuration without
+dropping connections. Send `SIGHUP` to reload on demand, or start with `--watch`
+to reload automatically when the config file changes:
+
+```sh
+go run ./cmd/portcullis --config config/portcullis.yaml --watch
+```
+
+`--watch-interval` (default `1s`) sets how often the file is polled. Downstream,
+redaction, and audit changes require a restart and are logged when a reload
+detects them.
+
 ## Configuration
 
 Configuration is a single declarative YAML file, validated at startup with
