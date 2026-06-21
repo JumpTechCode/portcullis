@@ -44,7 +44,7 @@ jobs:
       - name: test (race) and coverage gate
         run: ./scripts/coverage.sh 80
       - name: upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           files: ./coverage.out
           use_oidc: true
